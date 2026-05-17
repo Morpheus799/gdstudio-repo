@@ -2,7 +2,7 @@
   "id": "gdstudio",
   "name": "GD音乐台",
   "description": "使用GDStudio插件接口实现的音乐插件，支持网易云音乐、酷我音乐、JOOX和QQ音乐等多个平台的音乐搜索、播放和歌词显示功能。",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "author": "e^iπ=-1",
   "homepage": "https://music.gdstudio.xyz",
   "target_engine": "1.1.2",

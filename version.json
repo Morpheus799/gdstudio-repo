@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "download_url": "https://github.com/morpheus315/gdstudio/releases/download/v1.0.0/gdstudio_v1.0.0.alix",
-  "log": "### 功能\n\n- 支持网易云、酷我、JOOX、QQ音乐四个音乐源\n- 音乐搜索、播放URL获取、封面获取、歌词获取\n- 搜索时并行探测每首歌的实际音质\n- API 空结果自动重试（最多5次）\n- 音质分段映射（HR/SQ/320K/192K/128K）",
+  "version": "0.1.0",
+  "download_url": "https://github.com/morpheus315/gdstudio-repo/releases/download/v0.1.0/gdstudio_v0.1.0.alix",
+  "log": "initial commit",
   "date": "2026-05-17T00:00:00.000Z"
 }
