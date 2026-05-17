@@ -30,7 +30,7 @@ jobs:
       - name: Package extension
         run: |
           mkdir -p dist
-          tar czf "dist/gdstudio_v${{ steps.version.outputs.version }}.alix" manifest.json index.js
+          tar czf "dist/gdstudio_v${{ steps.version.outputs.version }}.alix" manifest.json index.js icon.png
 
       - name: Generate version.json
         run: |

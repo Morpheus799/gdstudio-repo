@@ -6,6 +6,7 @@
   "author": "e^iπ=-1",
   "homepage": "https://music.gdstudio.xyz",
   "target_engine": "1.1.2",
+  "icon": "icon.png",
   "main": "index.js",
   "grant": ["internet", "player", "music_list"],
   "contributes": {
