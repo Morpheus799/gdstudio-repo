@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0",
-  "download_url": "https://github.com/morpheus315/gdstudio-repo/releases/download/v0.1.0/gdstudio_v0.1.0.alix",
-  "log": "chore: prepare v0.1.0 release",
-  "date": "2026-05-17T09:40:16.000Z"
+  "version": "0.1.1",
+  "download_url": "https://github.com/morpheus315/gdstudio-repo/releases/download/v0.1.1/gdstudio_v0.1.1.alix",
+  "log": "优化了缓存逻辑并修复了无法翻页的问题",
+  "date": "2026-05-17T00:00:00.000Z"
 }

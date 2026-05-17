@@ -17,10 +17,7 @@ function buildQuery(obj) {
   return parts.join('&')
 }
 
-/**
- * Quality → br 参数映射
- * master/dolby 是主程序设置中超出 API 上限的两档 → 均映射为 999
- */
+// quality → br: master/dolby/wav/ape/flac24bit → 999, flac → 740, 320k → 320, 192k → 192, 128k → 128
 function qualityToBr(quality) {
   switch (quality) {
     case '128k': return 128
@@ -44,13 +41,9 @@ function brToQuality(br) {
   return '128k'
 }
 
-/**
- * 根据实际获取到的 br 值，构建 qualitys 对象
- * 返回该 br 值对应品质及以下所有更低品质
- */
+// 构建 qualitys 对象，包含 br 对应品质及以下所有更低品质
 function buildQualitysFromBr(br) {
   var qs = {}
-  // 只要 API 返回了 URL，至少是 128k 级别
   qs['128k'] = { sizeStr: null }
   if (br >= 192)  qs['192k'] = { sizeStr: null }
   if (br >= 320)  qs['320k'] = { sizeStr: null }
@@ -80,26 +73,15 @@ function parseArtist(artist) {
     .join('、')
 }
 
-/**
- * 探测某首歌曲的实际可用音质
- * 以 br=999 请求，API 自动返回最大可用品质
- */
-async function detectQuality(source, musicId, songName) {
-  API.logcat.debug('[' + source + '] detectQuality: id=' + musicId + ' name=' + songName)
+async function detectQuality(source, musicId) {
   try {
     var qs = buildQuery({ types: 'url', source: source, id: musicId, br: '999' })
     var resp = await API.request(BASE_URL + '?' + qs, { method: 'GET', timeout: 8000 })
     var data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
     if (data && data.url) {
-      var actualBr = data.br != null ? Number(data.br) : 128
-      API.logcat.debug('[' + source + '] detectQuality OK: id=' + musicId + ' data.br=' + data.br + ' actualBr=' + actualBr)
-      return actualBr
+      return data.br != null ? Number(data.br) : 128
     }
-    API.logcat.debug('[' + source + '] detectQuality no url, body keys: ' + (data ? Object.keys(data).join(',') : 'null'))
-  } catch (err) {
-    API.logcat.debug('[' + source + '] detectQuality error: ' + (err.message || err))
-  }
-  API.logcat.warn('[' + source + '] detectQuality failed, fallback to 128')
+  } catch (err) {}
   return 128
 }
 
@@ -133,78 +115,101 @@ function buildMusicInfo(item, source, actualBr) {
 
 // ========== 资源操作 ==========
 
+var searchCache = {}
+
 async function musicSearch(params) {
   var source = params.source
   var name = params.name
   var artist = params.artist
   var page = params.page || 1
   var limit = Math.min(params.limit || 20, 50)
+  var fetchCount = limit * 3
 
-  var qs = buildQuery({
-    types: 'search',
-    source: source,
-    name: artist ? name + ' ' + artist : name,
-    pages: String(page),
-    count: String(limit),
-  })
+  var searchKey = source + '|' + name + '|' + (artist || '')
+  var batchIndex = Math.floor((page - 1) / 3)
+  var offsetInBatch = (page - 1) % 3
 
-  var rawList = []
-  var maxRetries = 5
-  for (var retry = 0; retry < maxRetries; retry++) {
-    try {
-      var response = await API.request(BASE_URL + '?' + qs, { method: 'GET', timeout: 15000 })
-      var data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body
+  if (searchCache._key !== searchKey) {
+    searchCache = { _key: searchKey }
+  }
 
-      if (data && data.error) {
-        API.logcat.warn('[' + source + '] search api error: ' + data.error)
-        break
+  var batch = searchCache[batchIndex]
+  if (!batch) {
+    var apiPage = batchIndex + 1
+    var qs = buildQuery({
+      types: 'search',
+      source: source,
+      name: artist ? name + ' ' + artist : name,
+      pages: String(apiPage),
+      count: String(fetchCount),
+    })
+
+    var rawList = []
+    for (var retry = 0; retry < 5; retry++) {
+      try {
+        var response = await API.request(BASE_URL + '?' + qs, { method: 'GET', timeout: 15000 })
+        var data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body
+
+        if (data && data.error) break
+
+        rawList = Array.isArray(data) ? data : []
+        if (rawList.length > 0) break
+
+        if (retry < 4) {
+          await new Promise(function (resolve) { setTimeout(resolve, 300) })
+        }
+      } catch (err) {
+        if (retry < 4) {
+          await new Promise(function (resolve) { setTimeout(resolve, 500) })
+        }
       }
+    }
 
-      rawList = Array.isArray(data) ? data : []
-      if (rawList.length > 0) break
+    var total
+    if (rawList.length >= fetchCount) {
+      total = apiPage * fetchCount + 1
+    } else {
+      total = (apiPage - 1) * fetchCount + rawList.length
+    }
 
-      if (retry < maxRetries - 1) {
-        API.logcat.warn('[' + source + '] search returned empty list, retry ' + (retry + 1) + '/' + maxRetries)
-        // 等待一小段时间后重试
-        await new Promise(function (resolve) { setTimeout(resolve, 300) })
-      }
-    } catch (err) {
-      API.logcat.warn('[' + source + '] search attempt ' + (retry + 1) + ' failed: ' + (err.message || err))
-      if (retry < maxRetries - 1) {
-        await new Promise(function (resolve) { setTimeout(resolve, 500) })
-      }
+    batch = { rawList: rawList, items: {}, total: total }
+    searchCache[batchIndex] = batch
+  }
+
+  var startIdx = offsetInBatch * limit
+  var endIdx = Math.min(startIdx + limit, batch.rawList.length)
+
+  // 找出当前页中尚未构建的 item
+  var needDetect = []
+  for (var i = startIdx; i < endIdx; i++) {
+    if (!batch.items[i]) needDetect.push(i)
+  }
+
+  // 并行探测音质，再构建 item 并缓存
+  if (needDetect.length) {
+    var brResults = await Promise.all(
+      needDetect.map(function (i) {
+        return detectQuality(source, String(batch.rawList[i].id)).catch(function () { return 128 })
+      })
+    )
+    for (var j = 0; j < needDetect.length; j++) {
+      var idx = needDetect[j]
+      batch.items[idx] = buildMusicInfo(batch.rawList[idx], source, brResults[j])
     }
   }
 
-    // 并行探测每首歌的实际音质
-    API.logcat.info('[' + source + '] search got ' + rawList.length + ' items, detecting qualities...')
-    var qualityResults = await Promise.all(
-      rawList.map(function (item) {
-        return detectQuality(source, String(item.id), String(item.name || '')).catch(function (e) {
-          API.logcat.warn('[' + source + '] detectQuality exception: ' + (e && e.message ? e.message : e))
-          return 128
-        })
-      })
-    )
-    API.logcat.info('[' + source + '] quality results: ' + qualityResults.join(','))
+  // 从缓存组装当前页
+  var pageItems = []
+  for (var k = startIdx; k < endIdx; k++) {
+    pageItems.push(batch.items[k])
+  }
 
-    var resultList = rawList.map(function (item, idx) {
-      var info = buildMusicInfo(item, source, qualityResults[idx])
-      return info
-    })
-
-    // 抽样打印前3首的完整 meta.qualitys
-    for (var si = 0; si < Math.min(3, resultList.length); si++) {
-      var s = resultList[si]
-      API.logcat.info('[' + source + '] SAMPLE[' + si + ']: id=' + s.id + ' name=' + s.name + ' qualitys=' + JSON.stringify(s.meta.qualitys) + ' source=' + s.meta.source)
-    }
-
-    return {
-      list: resultList,
-      total: rawList.length,
-      page: page,
-      limit: limit,
-    }
+  return {
+    list: pageItems,
+    total: batch.total,
+    page: page,
+    limit: limit,
+  }
 }
 
 async function musicUrl(params) {
@@ -218,6 +223,7 @@ async function musicUrl(params) {
     var preferredBr = qualityToBr(quality)
     if (preferredBr) brsToTry.push(preferredBr)
   }
+  // 补充剩余 br 值，按优先级降序尝试
   var allBrs = [999, 740, 320, 192, 128]
   for (var i = 0; i < allBrs.length; i++) {
     if (brsToTry.indexOf(allBrs[i]) === -1) brsToTry.push(allBrs[i])
@@ -237,11 +243,10 @@ async function musicUrl(params) {
       }
     } catch (err) {
       lastError = err
-      API.logcat.warn('[' + source + '] musicUrl br=' + br + ' failed: ' + (err.message || err))
     }
   }
 
-  throw lastError || new Error('[' + source + '] No URL available for ' + musicId)
+  throw lastError || new Error('No URL available for ' + musicId)
 }
 
 async function musicPic(params) {
@@ -260,19 +265,17 @@ async function musicPic(params) {
       var sData = typeof sResp.body === 'string' ? JSON.parse(sResp.body) : sResp.body
       var list = Array.isArray(sData) ? sData : []
       if (list.length && list[0].pic_id) picId = String(list[0].pic_id)
-    } catch (err) {
-      API.logcat.warn('[' + source + '] musicPic fallback failed: ' + (err.message || err))
-    }
+    } catch (err) {}
   }
 
-  if (!picId) throw new Error('[' + source + '] No pic_id found')
+  if (!picId) throw new Error('No pic_id found')
 
   var pq = buildQuery({ types: 'pic', source: source, id: picId, size: '500' })
   var resp = await API.request(BASE_URL + '?' + pq, { method: 'GET', timeout: 10000 })
   var data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
 
   if (data && data.url) return String(data.url)
-  throw new Error('[' + source + '] No pic URL for pic_id ' + picId)
+  throw new Error('No pic URL for pic_id ' + picId)
 }
 
 async function musicLyric(params) {
@@ -295,7 +298,6 @@ async function musicLyric(params) {
       interval: musicInfo.interval || null,
     }
   } catch (err) {
-    API.logcat.warn('[' + source + '] musicLyric failed: ' + (err.message || err))
     return {
       lyric: '', tlyric: null, rlyric: null, awlyric: null,
       name: String(musicInfo.name || ''),
@@ -311,5 +313,3 @@ API.registerResourceAction({
   musicPic: musicPic,
   musicLyric: musicLyric,
 })
-
-API.logcat.info('GD Studio extension loaded')
