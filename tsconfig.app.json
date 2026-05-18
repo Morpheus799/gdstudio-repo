@@ -1,0 +1,12 @@
+{
+  "extends": "@any-listen/extension-kit/tsconfig.app.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "./",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["./src/**/*.d.ts", "./src/**/*.ts", "./src/**/*.js"],
+  "exclude": ["node_modules", "dist"]
+}
