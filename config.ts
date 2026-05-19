@@ -5,7 +5,7 @@ import pkg from './package.json' with { type: 'json' }
 const config: ExtensionConfig = {
   id: 'gdstudio',
   name: 'GD音乐台',
-  description: '使用GDStudio插件接口实现的音乐插件，支持网易云音乐、酷我音乐、JOOX和QQ音乐等多个平台的音乐搜索、播放和歌词显示功能。',
+  description: '使用GDStudio插件接口实现的音乐插件，支持网易云音乐、QQ音乐、酷我音乐、JOOX、TIDAL、QOBUZ、哔哩哔哩、Apple Music、YouTube Music、Spotify等多个平台的音乐搜索、播放和歌词显示功能。',
   version: pkg.version,
   homepage: pkg.homepage,
   license: pkg.license,
@@ -36,6 +36,36 @@ const config: ExtensionConfig = {
       {
         id: 'tencent',
         name: 'QQ音乐',
+        resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+      {
+        id: 'tidal',
+        name: 'TIDAL',
+        resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+      {
+        id: 'qobuz',
+        name: 'QOBUZ',
+        resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+      {
+        id: 'bilibili',
+        name: '哔哩哔哩',
+        resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+      {
+        id: 'apple',
+        name: 'Apple Music',
+        resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+      {
+        id: 'ytmusic',
+        name: 'YouTube Music',
+        resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+      {
+        id: 'spotify',
+        name: 'Spotify',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
     ],
