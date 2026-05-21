@@ -20,53 +20,62 @@ const config: ExtensionConfig = {
     resource: [
       {
         id: 'netease',
-        name: '网易云音乐',
+        name: 'gd-网易云音乐',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'kuwo',
-        name: '酷我音乐',
+        name: 'gd-酷我音乐',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'joox',
-        name: 'JOOX',
+        name: 'gd-JOOX',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'tencent',
-        name: 'QQ音乐',
+        name: 'gd-QQ音乐',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'tidal',
-        name: 'TIDAL',
+        name: 'gd-TIDAL',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'qobuz',
-        name: 'QOBUZ',
+        name: 'gd-QOBUZ',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'bilibili',
-        name: '哔哩哔哩',
+        name: 'gd-哔哩哔哩',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'apple',
-        name: 'Apple Music',
+        name: 'gd-Apple Music',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'ytmusic',
-        name: 'YouTube Music',
+        name: 'gd-YouTube Music',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
       },
       {
         id: 'spotify',
-        name: 'Spotify',
+        name: 'gd-Spotify',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
+      },
+    ],
+    settings: [
+      {
+        field: 'preloadQualityOnSearch',
+        name: '搜索时预加载音质',
+        description: '仅影响网易云音乐、酷我音乐、JOOX、哔哩哔哩四个主 API 音源；org 音源始终不会在搜索时预加载音质。',
+        type: 'boolean',
+        default: true,
       },
     ],
   },
