@@ -538,7 +538,11 @@ async function musicSearch(params: {
     }
 
     batch = { rawList, items, total }
-    searchCache[batchIndex] = batch
+    // 空结果多半是接口临时抽风/网络波动导致，不写入缓存，
+    // 否则用户重试相同搜索词时会命中这个空缓存而不再重新请求
+    if (rawList.length > 0) {
+      searchCache[batchIndex] = batch
+    }
   }
 
   const startIdx = offsetInBatch * limit
