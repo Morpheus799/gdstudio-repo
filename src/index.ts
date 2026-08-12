@@ -49,6 +49,22 @@ function notifyHttpError(statusCode: number | string, source?: string | number |
   }
 }
 
+function notifyNetworkError(source?: string | number | null) {
+  const now = Date.now()
+  if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
+  lastErrorNotifyAt = now
+  const src = source ? ` [${source}]` : ''
+  const message = `GD音乐台接口连接失败${src}，请检查网络后重试`
+  try {
+    const p = app?.showMessage?.(message, { type: 'error' })
+    if (p && typeof (p as Promise<unknown>).catch === 'function') {
+      void (p as Promise<unknown>).catch(() => {})
+    }
+  } catch (err) {
+    console.error('[gdstudio] Failed to show error toast:', err)
+  }
+}
+
 function padVersion(version: string): string {
   return version.split('.').map((p) => p.padStart(2, '0')).join('')
 }
@@ -431,26 +447,33 @@ async function apiCall(params: Record<string, string | number | null | undefined
   const requestParams = useMainApi ? params : { ...params, s: await buildSign(signKey) }
   const body = buildQuery(requestParams)
 
-  const resp = useMainApi
-    ? await apiRequest(MAIN_API_URL + '?' + body, {
-        method: 'GET',
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'X-Requested-With': 'XMLHttpRequest',
-          Referer: 'https://music.gdstudio.org/',
-        },
-      })
-    : await apiRequest(ORG_API_URL, {
-    method: 'POST',
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'X-Requested-With': 'XMLHttpRequest',
-      Referer: 'https://music.gdstudio.org/',
-    },
-    form: requestParams,
-  })
-  const statusCode = (resp as unknown as { statusCode?: number }).statusCode ?? '?'
+  let resp: { statusCode?: number; body: unknown; headers?: Record<string, unknown> }
+  try {
+    resp = useMainApi
+      ? await apiRequest(MAIN_API_URL + '?' + body, {
+          method: 'GET',
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+            Referer: 'https://music.gdstudio.org/',
+          },
+        })
+      : await apiRequest(ORG_API_URL, {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        Referer: 'https://music.gdstudio.org/',
+      },
+      form: requestParams,
+    })
+  } catch (err) {
+    console.error(`[gdstudio] request failed [${params.source}] types=${params.types}:`, err)
+    notifyNetworkError(params.source)
+    throw err
+  }
+  const statusCode = resp.statusCode ?? '?'
   if (statusCode !== 200) {
     console.error(`[gdstudio] non-200 response (${statusCode}):`, typeof resp.body === 'string' ? resp.body.slice(0, 500) : JSON.stringify(resp.body).slice(0, 500))
     notifyHttpError(statusCode, params.source)
@@ -524,6 +547,8 @@ async function musicSearch(params: {
           await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
         }
       } catch (_err) {
+        console.error(`[gdstudio] search request failed [${source}]:`, _err)
+        notifyNetworkError(source)
         if (retry < 1) {
           await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
         }
@@ -660,6 +685,7 @@ async function musicLyric(params: {
       (data && data.tlyric) ? String(data.tlyric) : null
     )
   } catch (_err) {
+    console.error(`[gdstudio] Failed to get lyric [${source}] id=${String(lyricId)}:`, _err)
     return buildLyricInfo(musicInfo)
   }
 }
