@@ -511,7 +511,10 @@ async function musicSearch(params: {
     }
 
     batch = { rawList, items, total }
-    searchCache[batchIndex] = batch
+    if(rawList.length > 0)
+    {
+      searchCache[batchIndex] = batch
+    }
   }
 
   const startIdx = offsetInBatch * limit
