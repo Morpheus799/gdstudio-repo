@@ -17,48 +17,64 @@ jobs:
       - name: Check out git repository
         uses: actions/checkout@v6
 
+      - name: Check if release is needed
+        id: gate
+        run: |
+          VERSION=$(node -p "require('./publish/version.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$(git ls-remote --tags origin "refs/tags/v$VERSION")" ]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$VERSION already released, skipping build & release."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Releasing v$VERSION."
+          fi
+
       - name: Install pnpm
+        if: steps.gate.outputs.should_release == 'true'
         uses: pnpm/action-setup@v6
 
       - name: Install Node.js
+        if: steps.gate.outputs.should_release == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 24
 
       - name: Install Dependencies
+        if: steps.gate.outputs.should_release == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Build src code
+        if: steps.gate.outputs.should_release == 'true'
         env:
           PRI_KEY: ${{ secrets.PRI_KEY }}
           PUB_KEY: ${{ secrets.PUB_KEY }}
         run: npm run build
 
-      - name: Get package info
-        run: |
-          node -p '`PACKAGE_VERSION=${require("./package.json").version}`' >> $GITHUB_ENV
-
       - name: Create git tag
+        if: steps.gate.outputs.should_release == 'true'
         uses: pkgdeps/git-tag-action@v2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           github_repo: ${{ github.repository }}
-          version: ${{ env.PACKAGE_VERSION }}
+          version: ${{ steps.gate.outputs.version }}
           git_commit_sha: ${{ github.sha }}
           git_tag_prefix: 'v'
 
       - name: Release
+        if: steps.gate.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           body_path: ./publish/changeLog.md
           prerelease: false
           draft: false
-          tag_name: v${{ env.PACKAGE_VERSION }}
+          tag_name: v${{ steps.gate.outputs.version }}
           files: |
             ./build/*.alix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate file MD5
+        if: steps.gate.outputs.should_release == 'true'
         run: |
           md5sum ./build/*.alix
