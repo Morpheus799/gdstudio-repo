@@ -32,7 +32,7 @@ const config: ExtensionConfig = {
         id: 'joox',
         name: 'gd-JOOX',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },
+      },/*
       {
         id: 'tencent',
         name: 'gd-QQ音乐',
@@ -47,12 +47,12 @@ const config: ExtensionConfig = {
         id: 'qobuz',
         name: 'gd-QOBUZ',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },
+      },*/
       {
         id: 'bilibili',
         name: 'gd-哔哩哔哩',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },
+      },/*
       {
         id: 'apple',
         name: 'gd-Apple Music',
@@ -67,7 +67,7 @@ const config: ExtensionConfig = {
         id: 'spotify',
         name: 'gd-Spotify',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },
+      },*/
     ],
     settings: [
       {
