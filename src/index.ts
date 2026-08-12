@@ -435,6 +435,11 @@ async function apiCall(params: Record<string, string | number | null | undefined
     ? await apiRequest(MAIN_API_URL + '?' + body, {
         method: 'GET',
         timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: 'https://music.gdstudio.org/',
+        },
       })
     : await apiRequest(ORG_API_URL, {
     method: 'POST',
