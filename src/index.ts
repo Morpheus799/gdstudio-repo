@@ -1,4 +1,4 @@
-import { registerResourceAction, request as apiRequest, console, crypto, player, musicList, configuration } from './shared/hostApi'
+import { registerResourceAction, request as apiRequest, console, crypto, player, musicList, configuration, app } from './shared/hostApi'
 
 const ORG_API_URL = 'https://music.gdstudio.org/api.php'
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
@@ -27,6 +27,28 @@ configuration?.onConfigChanged?.((keys: string[], config: Record<string, unknown
   }
 })
 
+// ======== 错误提示toast ==========
+
+let lastErrorNotifyAt = 0
+const ERROR_NOTIFY_INTERVAL = 5000
+
+function notifyHttpError(statusCode: number | string, source?: string | number | null) {
+  const now = Date.now()
+  if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
+  lastErrorNotifyAt = now
+  const src = source ? ` [${source}]` : ''
+  const message = `GD音乐台接口异常${src}：HTTP ${statusCode}，请稍后重试`
+  try {
+    // 不传 modal → 宿主渲染为底部居中的 toast 通知，3 秒后自动消失
+    const p = app?.showMessage?.(message, { type: 'error' })
+    if (p && typeof (p as Promise<unknown>).catch === 'function') {
+      void (p as Promise<unknown>).catch(() => {})
+    }
+  } catch (err) {
+    console.error('[gdstudio] Failed to show error toast:', err)
+  }
+}
+
 function padVersion(version: string): string {
   return version.split('.').map((p) => p.padStart(2, '0')).join('')
 }
@@ -43,6 +65,7 @@ async function getVersion(): Promise<string | null> {
       cachedPaddedVersion = padVersion(cachedVersion)
       return cachedVersion
     }
+    if (sc !== 200) notifyHttpError(sc)
   } catch (err) {
     console.error(`[gdstudio] Failed to get version: ${err}`)
   }
@@ -60,7 +83,10 @@ async function getServerTimestamp(): Promise<number> {
       },
     })
     const sc = (resp as unknown as { statusCode?: number }).statusCode ?? '?'
-    if (sc !== 200) return Date.now()
+    if (sc !== 200) {
+      notifyHttpError(sc)
+      return Date.now()
+    }
     return parseInt(String(resp.body).trim(), 10)
   } catch {
     return Date.now()
@@ -422,6 +448,7 @@ async function apiCall(params: Record<string, string | number | null | undefined
   const statusCode = (resp as unknown as { statusCode?: number }).statusCode ?? '?'
   if (statusCode !== 200) {
     console.error(`[gdstudio] non-200 response (${statusCode}):`, typeof resp.body === 'string' ? resp.body.slice(0, 500) : JSON.stringify(resp.body).slice(0, 500))
+    notifyHttpError(statusCode, params.source)
   }
   const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
   if (params.types === 'search') logSearchResponse(params.source, data)
