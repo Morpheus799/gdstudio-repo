@@ -73,7 +73,7 @@ const config: ExtensionConfig = {
       {
         field: 'preloadQualityOnSearch',
         name: '搜索时预加载音质',
-        description: '仅影响网易云音乐、酷我音乐、JOOX、哔哩哔哩四个主 API 音源；org 音源始终不会在搜索时预加载音质。',
+        description: '仅影响网易云音乐、酷我音乐、JOOX、哔哩哔哩四个主 API 音源。',
         type: 'boolean',
         default: true,
       },
