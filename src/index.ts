@@ -1,20 +1,11 @@
-import { registerResourceAction, request as apiRequest, console, crypto, player, musicList, configuration, app } from './shared/hostApi'
+import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app } from './shared/hostApi'
 
-const ORG_API_URL = 'https://music.gdstudio.org/api.php'
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
-const HOST = 'music.gdstudio.org'
-const PLAYER_JS_URL = 'https://music.gdstudio.org/js/player.js'
-const TIME_URL = 'https://music.gdstudio.org/time'
-const MAIN_API_SOURCES = new Set(['netease', 'kuwo', 'joox', 'bilibili'])
 const NO_URL_PLACEHOLDER = './gdstudio-no-url'
 const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
 const EMPTY_LYRIC = '[00:00.00]暂无歌词'
 const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
 
-// ========== 签名相关 ==========
-
-let cachedVersion: string | null = null
-let cachedPaddedVersion: string | null = null
 let preloadQualityOnSearch = true
 
 void configuration?.getConfigs?.<[boolean]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH]).then(([value]) => {
@@ -65,59 +56,6 @@ function notifyNetworkError(source?: string | number | null) {
   }
 }
 
-function padVersion(version: string): string {
-  return version.split('.').map((p) => p.padStart(2, '0')).join('')
-}
-
-async function getVersion(): Promise<string | null> {
-  if (cachedVersion) return cachedVersion
-  try {
-    const resp = await apiRequest(PLAYER_JS_URL, { method: 'GET', timeout: 10000 })
-    const sc = (resp as unknown as { statusCode?: number }).statusCode ?? '?'
-    const text = typeof resp.body === 'string' ? resp.body : ''
-    const match = text.match(/version\s*:\s*"([^"]+)"/)
-    if (match) {
-      cachedVersion = match[1]
-      cachedPaddedVersion = padVersion(cachedVersion)
-      return cachedVersion
-    }
-    if (sc !== 200) notifyHttpError(sc)
-  } catch (err) {
-    console.error(`[gdstudio] Failed to get version: ${err}`)
-  }
-  return null
-}
-
-async function getServerTimestamp(): Promise<number> {
-  try {
-    const resp = await apiRequest(TIME_URL, {
-      method: 'GET',
-      timeout: 5000,
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        Referer: 'https://music.gdstudio.org/',
-      },
-    })
-    const sc = (resp as unknown as { statusCode?: number }).statusCode ?? '?'
-    if (sc !== 200) {
-      notifyHttpError(sc)
-      return Date.now()
-    }
-    return parseInt(String(resp.body).trim(), 10)
-  } catch {
-    return Date.now()
-  }
-}
-
-async function buildSign(keyword: string): Promise<string> {
-  const version = await getVersion()
-  if (!version || !cachedPaddedVersion) throw new Error('Version not available')
-  const ts = await getServerTimestamp()
-  const raw = `${HOST}|${cachedPaddedVersion}|${String(ts).slice(0, 9)}|${encodeURIComponent(keyword)}`
-  const hash = await crypto.md5(raw)
-  return hash.slice(-8).toUpperCase()
-}
-
 // ========== 工具函数 ==========
 
 function buildQuery(obj: Record<string, string | number | null | undefined>) {
@@ -131,10 +69,6 @@ function buildQuery(obj: Record<string, string | number | null | undefined>) {
     }
   }
   return parts.join('&')
-}
-
-function shouldUseMainApi(source: string | number | null | undefined) {
-  return MAIN_API_SOURCES.has(String(source || ''))
 }
 
 function qualityToBr(quality: string): number | null {
@@ -158,13 +92,6 @@ function brToQuality(br: number): string {
   if (br >= 320) return '320k'
   if (br >= 192) return '192k'
   return '128k'
-}
-
-function normalizeMusicUrl(source: string, url: string) {
-  if (!shouldUseMainApi(source) && url.includes('music.gdstudio.xyz')) {
-    return url.replaceAll('music.gdstudio.xyz', 'music.gdstudio.org')
-  }
-  return url
 }
 
 function buildQualitysFromBr(br: number): Record<string, { sizeStr: null }> {
@@ -382,7 +309,7 @@ async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>)
           source,
           pages: '1',
           name: queryName,
-        }, queryName)
+        })
         const list = Array.isArray(sData) ? sData : []
         if (list.length && list[0].pic_id) picId = String(list[0].pic_id)
       } catch (_err) { /* ignore */ }
@@ -395,7 +322,7 @@ async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>)
       source,
       id: picId,
       size: '500',
-    }, picId)
+    })
 
     console.log(`[gdstudio] pic response [${source}] musicId=${musicId} picId=${picId}: ${getResponsePreview(data)}`)
 
@@ -420,14 +347,13 @@ async function detectMainApiQuality(source: string, musicId: string) {
       source,
       id: musicId,
       br: '999',
-    }, musicId)
+    })
     if (data && data.url) return data.br != null ? Number(data.br) : 128
   } catch (_err) { /* ignore */ }
   return 128
 }
 
 async function hydrateMainApiSearchItem(source: string, rawItem: Record<string, unknown>, musicInfo: MusicInfo) {
-  if (!shouldUseMainApi(source)) return
   const meta = musicInfo.meta as Record<string, unknown>
   if (meta._detailsLoaded) return
 
@@ -442,31 +368,19 @@ async function hydrateMainApiSearchItem(source: string, rawItem: Record<string, 
   meta._detailsLoaded = true
 }
 
-async function apiCall(params: Record<string, string | number | null | undefined>, signKey: string) {
-  const useMainApi = shouldUseMainApi(params.source)
-  const requestParams = useMainApi ? params : { ...params, s: await buildSign(signKey) }
-  const body = buildQuery(requestParams)
+async function apiCall(params: Record<string, string | number | null | undefined>) {
+  const body = buildQuery(params)
 
   let resp: { statusCode?: number; body: unknown; headers?: Record<string, unknown> }
   try {
-    resp = useMainApi
-      ? await apiRequest(MAIN_API_URL + '?' + body, {
-          method: 'GET',
-          timeout: 15000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'X-Requested-With': 'XMLHttpRequest',
-            Referer: 'https://music.gdstudio.org/',
-          },
-        })
-      : await apiRequest(ORG_API_URL, {
-      method: 'POST',
+    resp = await apiRequest(MAIN_API_URL + '?' + body, {
+      method: 'GET',
+      timeout: 15000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'X-Requested-With': 'XMLHttpRequest',
         Referer: 'https://music.gdstudio.org/',
       },
-      form: requestParams,
     })
   } catch (err) {
     console.error(`[gdstudio] request failed [${params.source}] types=${params.types}:`, err)
@@ -508,7 +422,7 @@ async function musicSearch(params: {
   const artist = params.artist
   const page = params.page || 1
   const limit = Math.min(params.limit || 20, 50)
-  const batchPageCount = shouldUseMainApi(source) ? 3 : 2
+  const batchPageCount = 3
   const fetchCount = limit * batchPageCount
 
   const searchKey = source + '|' + name + '|' + (artist || '')
@@ -536,7 +450,7 @@ async function musicSearch(params: {
           source,
           pages: String(apiPage),
           name: queryName,
-        }, queryName)
+        })
 
         if (data && data.error) break
 
@@ -577,12 +491,10 @@ async function musicSearch(params: {
   const startIdx = offsetInBatch * limit
   const endIdx = Math.min(startIdx + limit, batch.rawList.length)
 
-  if (shouldUseMainApi(source)) {
-    await Promise.all(Array.from({ length: endIdx - startIdx }, async (_item, index) => {
-      const itemIndex = startIdx + index
-      await hydrateMainApiSearchItem(source, batch.rawList[itemIndex], batch.items[itemIndex])
-    }))
-  }
+  await Promise.all(Array.from({ length: endIdx - startIdx }, async (_item, index) => {
+    const itemIndex = startIdx + index
+    await hydrateMainApiSearchItem(source, batch.rawList[itemIndex], batch.items[itemIndex])
+  }))
 
   const pageItems: MusicInfo[] = []
   for (let k = startIdx; k < endIdx; k++) {
@@ -628,14 +540,14 @@ async function musicUrl(params: {
         source,
         id: musicId,
         br: String(br),
-      }, musicId)
+      })
 
       if (data && data.url) {
         const actualBr = data.br != null ? Number(data.br) : br
         const meta = musicInfo.meta as Record<string, unknown> | undefined
         if (meta) meta.qualitys = buildQualitysFromBr(actualBr)
         void updatePlayingMusicQuality(source, musicId, actualBr)
-        return { url: normalizeMusicUrl(source, String(data.url)), quality: brToQuality(actualBr) }
+        return { url: String(data.url), quality: brToQuality(actualBr) }
       }
     } catch (err) {
       lastError = err as Error
@@ -677,7 +589,7 @@ async function musicLyric(params: {
       types: 'lyric',
       source,
       id: String(lyricId),
-    }, String(lyricId))
+    })
 
     return buildLyricInfo(
       musicInfo,
