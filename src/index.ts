@@ -442,6 +442,7 @@ async function musicSearch(params: {
     const queryName = artist ? name + ' ' + artist : name
 
     let rawList: Record<string, unknown>[] = []
+    let lastError: string | null = null
     for (let retry = 0; retry < 2; retry++) {
       try {
         const data = await apiCall({
@@ -452,7 +453,10 @@ async function musicSearch(params: {
           name: queryName,
         })
 
-        if (data && data.error) break
+        if (data && data.error) {
+          lastError = String(data.error)
+          break
+        }
 
         rawList = Array.isArray(data) ? data : []
         if (rawList.length > 0) break
@@ -467,6 +471,12 @@ async function musicSearch(params: {
           await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
         }
       }
+    }
+
+    // gd API 限流/波动时表现为无特征的空结果;按上游维护者建议抛错,
+    // 让主程序走失败路径(不缓存 + 提示重试),而不是当成"成功但无结果"
+    if (rawList.length === 0) {
+      throw new Error(lastError || '搜索返回空结果(可能是 API 限流,请稍后重试)')
     }
 
     let total: number
