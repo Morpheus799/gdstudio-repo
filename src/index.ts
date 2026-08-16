@@ -168,6 +168,14 @@ function getResponsePreview(data: unknown) {
   }
 }
 
+function bodyPreview(body: unknown, length = 500) {
+  try {
+    return (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, length)
+  } catch {
+    return String(body).slice(0, length)
+  }
+}
+
 function logSearchResponse(source: string | number | null | undefined, data: unknown) {
   const list = Array.isArray(data) ? data.slice(0, 3) : []
   const preview = list.map((item) => ({
@@ -476,7 +484,7 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
     throw err
   }
   if (signResp.statusCode !== 200) {
-    console.error(`[gdstudio] sign server non-200 (${signResp.statusCode}):`, String(signResp.body).slice(0, 300))
+    console.error(`[gdstudio] sign server non-200 (${signResp.statusCode}):`, bodyPreview(signResp.body, 300))
     notifyHttpError(signResp.statusCode, source)
     throw new Error(`签名服务器返回 ${signResp.statusCode}`)
   }
@@ -486,9 +494,10 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
     req?: { url: string; method: string; headers: Record<string, string>; body: string | null }
   }
   try {
-    signData = JSON.parse(String(signResp.body)) as typeof signData
+    // 宿主的 request 返回的 body 可能是已解析的对象,也可能是原始字符串,双态处理
+    signData = (typeof signResp.body === 'string' ? JSON.parse(signResp.body) : signResp.body) as typeof signData
   } catch {
-    throw new Error('签名服务器响应解析失败: ' + String(signResp.body).slice(0, 200))
+    throw new Error('签名服务器响应解析失败: ' + JSON.stringify(signResp.body).slice(0, 200))
   }
   if (!signData.ok || !signData.req || !signData.req.url) {
     throw new Error(`签名失败: ${signData.error || '未知错误'}`)
@@ -511,7 +520,7 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
   }
   const statusCode = resp.statusCode ?? '?'
   if (statusCode !== 200) {
-    console.error(`[gdstudio] non-200 response (${statusCode}):`, String(resp.body).slice(0, 500))
+    console.error(`[gdstudio] non-200 response (${statusCode}):`, bodyPreview(resp.body, 500))
     notifyHttpError(statusCode, source)
   }
   const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
