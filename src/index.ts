@@ -1,4 +1,4 @@
-import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app } from './shared/hostApi'
+import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app, dataConverter } from './shared/hostApi'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
 const NO_URL_PLACEHOLDER = './gdstudio-no-url'
@@ -510,7 +510,8 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
     resp = await apiRequest(req.url, {
       method: (req.method || 'POST') as never,
       headers: req.headers,
-      binary: req.body != null ? new TextEncoder().encode(String(req.body)) : undefined,
+      // VM 里没有 TextEncoder,用宿主提供的 dataConverter 做 utf-8 → 字节转换
+      binary: req.body != null ? await dataConverter(String(req.body), 'utf-8', 'binary') : undefined,
       timeout: 15000,
     })
   } catch (err) {
