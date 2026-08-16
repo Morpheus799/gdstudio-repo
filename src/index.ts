@@ -6,15 +6,63 @@ const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
 const EMPTY_LYRIC = '[00:00.00]暂无歌词'
 const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
 
-let preloadQualityOnSearch = true
+// ========== org 音源(经签名服务器直连 GDStudio)==========
 
-void configuration?.getConfigs?.<[boolean]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH]).then(([value]) => {
-  preloadQualityOnSearch = value !== false
+// org 系列音源:与主 API 音源(netease/kuwo/joox/bilibili)不同,
+// 请求需带签名,由 gdstudio-server 的 /sign 端点组装成品请求后按原样发出
+const ORG_SOURCES = new Set(['tencent', 'tidal', 'qobuz', 'apple', 'ytmusic', 'spotify'])
+const CONFIG_ENABLE_ORG_SOURCES = 'enableOrgSources'
+const CONFIG_SIGN_SERVER_URL = 'signServerUrl'
+const CONFIG_SIGN_KEY = 'signKey'
+
+// 动态注册到宿主的 org 音源清单(宿主 feat/dynamic-resource-registration 支持:
+// 配置里的 dynamicResources 会在聚合资源列表时并入,无需改 manifest)
+const ORG_RESOURCES = [
+  { id: 'tencent', name: 'gd-QQ音乐', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
+  { id: 'tidal', name: 'gd-TIDAL', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
+  { id: 'qobuz', name: 'gd-QOBUZ', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
+  { id: 'apple', name: 'gd-Apple Music', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
+  { id: 'ytmusic', name: 'gd-YouTube Music', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
+  { id: 'spotify', name: 'gd-Spotify', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
+]
+
+let preloadQualityOnSearch = true
+let enableOrgSources = false
+let signServerUrl = ''
+let signKey = ''
+
+const isOrgSource = (source: string | number | null | undefined) => ORG_SOURCES.has(String(source || ''))
+
+// 按开关把 org 音源动态注册/注销到宿主(设置变化即生效,无需重启)
+async function applyOrgResources() {
+  try {
+    await configuration?.setConfigs?.({ dynamicResources: enableOrgSources ? ORG_RESOURCES : [] })
+  } catch (err) {
+    console.error('[gdstudio] applyOrgResources failed:', err)
+  }
+}
+
+void configuration?.getConfigs?.<[boolean, string, string, string]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_ENABLE_ORG_SOURCES, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY]).then(([preload, enableOrg, signUrl, signKeyValue]) => {
+  preloadQualityOnSearch = preload !== false
+  enableOrgSources = enableOrg === true
+  signServerUrl = typeof signUrl === 'string' ? signUrl.trim() : ''
+  signKey = typeof signKeyValue === 'string' ? signKeyValue.trim() : ''
+  void applyOrgResources()
 }).catch(() => {})
 
 configuration?.onConfigChanged?.((keys: string[], config: Record<string, unknown>) => {
   if (keys.includes(CONFIG_PRELOAD_QUALITY_ON_SEARCH)) {
     preloadQualityOnSearch = config[CONFIG_PRELOAD_QUALITY_ON_SEARCH] !== false
+  }
+  if (keys.includes(CONFIG_ENABLE_ORG_SOURCES)) {
+    enableOrgSources = config[CONFIG_ENABLE_ORG_SOURCES] === true
+    void applyOrgResources()
+  }
+  if (keys.includes(CONFIG_SIGN_SERVER_URL)) {
+    signServerUrl = typeof config[CONFIG_SIGN_SERVER_URL] === 'string' ? config[CONFIG_SIGN_SERVER_URL].trim() : ''
+  }
+  if (keys.includes(CONFIG_SIGN_KEY)) {
+    signKey = typeof config[CONFIG_SIGN_KEY] === 'string' ? config[CONFIG_SIGN_KEY].trim() : ''
   }
 })
 
@@ -368,7 +416,7 @@ async function hydrateMainApiSearchItem(source: string, rawItem: Record<string, 
   meta._detailsLoaded = true
 }
 
-async function apiCall(params: Record<string, string | number | null | undefined>) {
+async function apiCallMainApi(params: Record<string, string | number | null | undefined>) {
   const body = buildQuery(params)
 
   let resp: { statusCode?: number; body: unknown; headers?: Record<string, unknown> }
@@ -395,6 +443,84 @@ async function apiCall(params: Record<string, string | number | null | undefined
   const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
   if (params.types === 'search') logSearchResponse(params.source, data)
   return data
+}
+
+// org 音源:调签名服务器的 /sign 拿成品请求,按成品请求原样直发 GDStudio。
+// 签名时效为秒级(实测 5~15s),因此每次调用都重新取签名,拿到后立即发送。
+async function apiCallOrg(params: Record<string, string | number | null | undefined>) {
+  const source = String(params.source || '')
+  if (!signServerUrl) throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+
+  // 组装 /sign 参数:op + 业务参数(与签名服务器的 op/参数一一对应;
+  // 注意主 API 字段名 pages 对应签名服务器的 page)
+  const signParams: Record<string, string | number> = { op: String(params.types), source }
+  for (const key of Object.keys(params)) {
+    if (key === 'types' || key === 'source') continue
+    if (params[key] != null) signParams[key === 'pages' ? 'page' : key] = String(params[key])
+  }
+  const signHeaders: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  }
+  if (signKey) signHeaders.Authorization = `Bearer ${signKey}`
+
+  let signResp: { statusCode?: number; body: unknown }
+  try {
+    signResp = await apiRequest(signServerUrl.replace(/\/+$/, '') + '/sign?' + buildQuery(signParams), {
+      method: 'GET',
+      headers: signHeaders,
+      timeout: 8000,
+    })
+  } catch (err) {
+    console.error(`[gdstudio] sign request failed [${source}]:`, err)
+    notifyNetworkError(source)
+    throw err
+  }
+  if (signResp.statusCode !== 200) {
+    console.error(`[gdstudio] sign server non-200 (${signResp.statusCode}):`, String(signResp.body).slice(0, 300))
+    notifyHttpError(signResp.statusCode, source)
+    throw new Error(`签名服务器返回 ${signResp.statusCode}`)
+  }
+  let signData: {
+    ok?: boolean
+    error?: string
+    req?: { url: string; method: string; headers: Record<string, string>; body: string | null }
+  }
+  try {
+    signData = JSON.parse(String(signResp.body)) as typeof signData
+  } catch {
+    throw new Error('签名服务器响应解析失败: ' + String(signResp.body).slice(0, 200))
+  }
+  if (!signData.ok || !signData.req || !signData.req.url) {
+    throw new Error(`签名失败: ${signData.error || '未知错误'}`)
+  }
+
+  // 立即按成品请求原样发送(透传 url/method/headers/body)
+  const req = signData.req
+  let resp: { statusCode?: number; body: unknown }
+  try {
+    resp = await apiRequest(req.url, {
+      method: (req.method || 'POST') as never,
+      headers: req.headers,
+      binary: req.body != null ? new TextEncoder().encode(String(req.body)) : undefined,
+      timeout: 15000,
+    })
+  } catch (err) {
+    console.error(`[gdstudio] direct request failed [${source}]:`, err)
+    notifyNetworkError(source)
+    throw err
+  }
+  const statusCode = resp.statusCode ?? '?'
+  if (statusCode !== 200) {
+    console.error(`[gdstudio] non-200 response (${statusCode}):`, String(resp.body).slice(0, 500))
+    notifyHttpError(statusCode, source)
+  }
+  const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
+  if (params.types === 'search') logSearchResponse(params.source, data)
+  return data
+}
+
+function apiCall(params: Record<string, string | number | null | undefined>) {
+  return isOrgSource(params.source) ? apiCallOrg(params) : apiCallMainApi(params)
 }
 
 // ========== 资源操作 ==========
@@ -501,10 +627,13 @@ async function musicSearch(params: {
   const startIdx = offsetInBatch * limit
   const endIdx = Math.min(startIdx + limit, batch.rawList.length)
 
-  await Promise.all(Array.from({ length: endIdx - startIdx }, async (_item, index) => {
-    const itemIndex = startIdx + index
-    await hydrateMainApiSearchItem(source, batch.rawList[itemIndex], batch.items[itemIndex])
-  }))
+  // org 音源不预加载音质/封面:每次签名请求都占上游配额,搜索界面严禁嗅探(防限流)
+  if (!isOrgSource(source)) {
+    await Promise.all(Array.from({ length: endIdx - startIdx }, async (_item, index) => {
+      const itemIndex = startIdx + index
+      await hydrateMainApiSearchItem(source, batch.rawList[itemIndex], batch.items[itemIndex])
+    }))
+  }
 
   const pageItems: MusicInfo[] = []
   for (let k = startIdx; k < endIdx; k++) {
