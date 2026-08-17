@@ -7,7 +7,7 @@
   ],
   "homepage": "https://github.com/Morpheus799/gdstudio-repo#readme",
   "license": "Apache-2.0",
-  "author": "morpheus315",
+  "author": "e^iπ=-1",
   "type": "module",
   "scripts": {
     "build": "extension-kit --build",
