@@ -1,7 +1,6 @@
 import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app, dataConverter } from './shared/hostApi'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
-const NO_URL_PLACEHOLDER = './gdstudio-no-url'
 const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
 const EMPTY_LYRIC = '[00:00.00]暂无歌词'
 const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
@@ -654,14 +653,14 @@ async function musicUrl(params: {
   const musicId = String(musicInfo.id || ((musicInfo.meta as Record<string, unknown> | undefined)?.musicId) || '')
   prefetchPlaybackPic(source, musicId, musicInfo)
 
-  const brsToTry: number[] = []
+  // 从用户选择的音质开始降级:只尝试偏好档及以下(如 320k → 320,192,128),
+  // 不再像之前那样偏好档失败后先跳回 999 再往下降(org 音源白烧签名配额);
+  // 未指定/未知音质时走完整降级链
+  const allBrs = [999, 740, 320, 192, 128]
+  let brsToTry: number[] = allBrs
   if (quality) {
     const preferredBr = qualityToBr(quality)
-    if (preferredBr) brsToTry.push(preferredBr)
-  }
-  const allBrs = [999, 740, 320, 192, 128]
-  for (let i = 0; i < allBrs.length; i++) {
-    if (brsToTry.indexOf(allBrs[i]) === -1) brsToTry.push(allBrs[i])
+    if (preferredBr) brsToTry = allBrs.filter((br) => br <= preferredBr)
   }
 
   let lastError: Error | null = null
@@ -688,8 +687,12 @@ async function musicUrl(params: {
     }
   }
 
+  // 全档失败抛错而不是返回占位符:宿主会把返回的 url 存进 SQLite 缓存,
+  // './gdstudio-no-url' 这类占位符能通过宿主的 allowedUrl 校验,一旦入缓存
+  // 就永久毒化该歌曲(后续播放永远命中坏缓存,不再请求真实 API);
+  // 抛错则宿主不写缓存,还会尝试其他扩展源并正常报播放失败
   if (lastError) console.error(`[gdstudio] No URL available for ${source}:${musicId}:`, lastError.message)
-  return { url: NO_URL_PLACEHOLDER, quality: quality || '128k' }
+  throw new Error(`[${source}] No URL available for ${musicId}${lastError ? `: ${lastError.message}` : ''}`)
 }
 
 async function musicPic(params: {
