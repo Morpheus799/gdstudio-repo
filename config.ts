@@ -32,7 +32,7 @@ const config: ExtensionConfig = {
         id: 'joox',
         name: 'gd-JOOX',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },/*
+      },
       {
         id: 'tencent',
         name: 'gd-QQ音乐',
@@ -47,12 +47,12 @@ const config: ExtensionConfig = {
         id: 'qobuz',
         name: 'gd-QOBUZ',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },*/
+      },
       {
         id: 'bilibili',
         name: 'gd-哔哩哔哩',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },/*
+      },
       {
         id: 'apple',
         name: 'gd-Apple Music',
@@ -67,7 +67,7 @@ const config: ExtensionConfig = {
         id: 'spotify',
         name: 'gd-Spotify',
         resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
-      },*/
+      },
     ],
     settings: [
       {
@@ -78,16 +78,9 @@ const config: ExtensionConfig = {
         default: true,
       },
       {
-        field: 'enableOrgSources',
-        name: '启用 org 音源',
-        description: '开启后动态添加 QQ音乐、TIDAL、QOBUZ、Apple Music、YouTube Music、Spotify 音源(经签名服务器直连 GDStudio,需在下方配置签名服务器)。',
-        type: 'boolean',
-        default: false,
-      },
-      {
         field: 'signServerUrl',
         name: '签名服务器地址',
-        description: 'gdstudio-server 的地址,不要带 /sign 路径,例如 https://your-domain.example',
+        description: 'gdstudio-server 的地址,不要带 /sign 路径,例如 https://your-domain.example。QQ音乐、TIDAL、QOBUZ、Apple Music、YouTube Music、Spotify 音源必须配置此项后才可用。',
         type: 'input',
         default: '',
       },

@@ -11,52 +11,24 @@ const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
 // org 系列音源:与主 API 音源(netease/kuwo/joox/bilibili)不同,
 // 请求需带签名,由 gdstudio-server 的 /sign 端点组装成品请求后按原样发出
 const ORG_SOURCES = new Set(['tencent', 'tidal', 'qobuz', 'apple', 'ytmusic', 'spotify'])
-const CONFIG_ENABLE_ORG_SOURCES = 'enableOrgSources'
 const CONFIG_SIGN_SERVER_URL = 'signServerUrl'
 const CONFIG_SIGN_KEY = 'signKey'
 
-// 动态注册到宿主的 org 音源清单(宿主 feat/dynamic-resource-registration 支持:
-// 配置里的 dynamicResources 会在聚合资源列表时并入,无需改 manifest)
-const ORG_RESOURCES = [
-  { id: 'tencent', name: 'gd-QQ音乐', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
-  { id: 'tidal', name: 'gd-TIDAL', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
-  { id: 'qobuz', name: 'gd-QOBUZ', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
-  { id: 'apple', name: 'gd-Apple Music', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
-  { id: 'ytmusic', name: 'gd-YouTube Music', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
-  { id: 'spotify', name: 'gd-Spotify', resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'], visible: true },
-]
-
 let preloadQualityOnSearch = true
-let enableOrgSources = false
 let signServerUrl = ''
 let signKey = ''
 
 const isOrgSource = (source: string | number | null | undefined) => ORG_SOURCES.has(String(source || ''))
 
-// 按开关把 org 音源动态注册/注销到宿主(设置变化即生效,无需重启)
-async function applyOrgResources() {
-  try {
-    await configuration?.setConfigs?.({ dynamicResources: enableOrgSources ? ORG_RESOURCES : [] })
-  } catch (err) {
-    console.error('[gdstudio] applyOrgResources failed:', err)
-  }
-}
-
-void configuration?.getConfigs?.<[boolean, string, string, string]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_ENABLE_ORG_SOURCES, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY]).then(([preload, enableOrg, signUrl, signKeyValue]) => {
+void configuration?.getConfigs?.<[boolean, string, string]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY]).then(([preload, signUrl, signKeyValue]) => {
   preloadQualityOnSearch = preload !== false
-  enableOrgSources = enableOrg === true
   signServerUrl = typeof signUrl === 'string' ? signUrl.trim() : ''
   signKey = typeof signKeyValue === 'string' ? signKeyValue.trim() : ''
-  void applyOrgResources()
 }).catch(() => {})
 
 configuration?.onConfigChanged?.((keys: string[], config: Record<string, unknown>) => {
   if (keys.includes(CONFIG_PRELOAD_QUALITY_ON_SEARCH)) {
     preloadQualityOnSearch = config[CONFIG_PRELOAD_QUALITY_ON_SEARCH] !== false
-  }
-  if (keys.includes(CONFIG_ENABLE_ORG_SOURCES)) {
-    enableOrgSources = config[CONFIG_ENABLE_ORG_SOURCES] === true
-    void applyOrgResources()
   }
   if (keys.includes(CONFIG_SIGN_SERVER_URL)) {
     signServerUrl = typeof config[CONFIG_SIGN_SERVER_URL] === 'string' ? config[CONFIG_SIGN_SERVER_URL].trim() : ''
@@ -66,17 +38,12 @@ configuration?.onConfigChanged?.((keys: string[], config: Record<string, unknown
   }
 })
 
-// ======== 错误提示toast ==========
+// ======== 错误提示toast =========
 
 let lastErrorNotifyAt = 0
 const ERROR_NOTIFY_INTERVAL = 5000
 
-function notifyHttpError(statusCode: number | string, source?: string | number | null) {
-  const now = Date.now()
-  if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
-  lastErrorNotifyAt = now
-  const src = source ? ` [${source}]` : ''
-  const message = `GD音乐台接口异常${src}：HTTP ${statusCode}，请稍后重试`
+function showErrorToast(message: string) {
   try {
     // 不传 modal → 宿主渲染为底部居中的 toast 通知，3 秒后自动消失
     const p = app?.showMessage?.(message, { type: 'error' })
@@ -88,20 +55,29 @@ function notifyHttpError(statusCode: number | string, source?: string | number |
   }
 }
 
+function notifyHttpError(statusCode: number | string, source?: string | number | null) {
+  const now = Date.now()
+  if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
+  lastErrorNotifyAt = now
+  const src = source ? ` [${source}]` : ''
+  showErrorToast(`GD音乐台接口异常${src}：HTTP ${statusCode}，请稍后重试`)
+}
+
 function notifyNetworkError(source?: string | number | null) {
   const now = Date.now()
   if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
   lastErrorNotifyAt = now
   const src = source ? ` [${source}]` : ''
-  const message = `GD音乐台接口连接失败${src}，请检查网络后重试`
-  try {
-    const p = app?.showMessage?.(message, { type: 'error' })
-    if (p && typeof (p as Promise<unknown>).catch === 'function') {
-      void (p as Promise<unknown>).catch(() => {})
-    }
-  } catch (err) {
-    console.error('[gdstudio] Failed to show error toast:', err)
-  }
+  showErrorToast(`GD音乐台接口连接失败${src}，请检查网络后重试`)
+}
+
+// org 音源未配置签名服务器:点击音源搜索/播放即报错引导去设置
+function notifySignServerMissing(source?: string | number | null) {
+  const now = Date.now()
+  if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
+  lastErrorNotifyAt = now
+  const src = source ? ` [${source}]` : ''
+  showErrorToast(`GD音乐台${src} 音源需要签名服务器，请先在插件设置中配置「签名服务器地址」`)
 }
 
 // ========== 工具函数 ==========
@@ -457,7 +433,10 @@ async function apiCallMainApi(params: Record<string, string | number | null | un
 // 签名时效为秒级(实测 5~15s),因此每次调用都重新取签名,拿到后立即发送。
 async function apiCallOrg(params: Record<string, string | number | null | undefined>) {
   const source = String(params.source || '')
-  if (!signServerUrl) throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+  if (!signServerUrl) {
+    notifySignServerMissing(source)
+    throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+  }
 
   // 组装 /sign 参数:op + 业务参数(与签名服务器的 op/参数一一对应;
   // 注意主 API 字段名 pages 对应签名服务器的 page)
@@ -485,7 +464,7 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
   }
   if (signResp.statusCode !== 200) {
     console.error(`[gdstudio] sign server non-200 (${signResp.statusCode}):`, bodyPreview(signResp.body, 300))
-    notifyHttpError(signResp.statusCode, source)
+    notifyHttpError(signResp.statusCode ?? '?', source)
     throw new Error(`签名服务器返回 ${signResp.statusCode}`)
   }
   let signData: {
@@ -560,6 +539,12 @@ async function musicSearch(params: {
   const limit = Math.min(params.limit || 20, 50)
   const batchPageCount = 3
   const fetchCount = limit * batchPageCount
+
+  // org 音源未配置签名服务器:立即报错,不进重试/缓存流程
+  if (isOrgSource(source) && !signServerUrl) {
+    notifySignServerMissing(source)
+    throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+  }
 
   const searchKey = source + '|' + name + '|' + (artist || '')
   const batchIndex = Math.floor((page - 1) / batchPageCount)
@@ -751,9 +736,12 @@ async function musicLyric(params: {
   }
 }
 
+// 内部实现刻意用宽松类型(musicInfo 当不透明口袋读写 meta),
+// 与宿主声明的精确类型在类型层面对不上;运行时由宿主逐字段校验,
+// 故在注册边界收口(与上面 musicList.listAction 的处理一致)
 registerResourceAction({
   musicSearch,
   musicUrl,
   musicPic,
   musicLyric,
-})
+} as never)
