@@ -1,4 +1,5 @@
 import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app, dataConverter } from './shared/hostApi'
+import { createSearchPagination } from './shared/searchPagination'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
 const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
@@ -513,16 +514,52 @@ function apiCall(params: Record<string, string | number | null | undefined>) {
 
 // ========== 资源操作 ==========
 
-interface BatchCache {
-  _key: string
-  [batchIndex: number]: {
-    rawList: Record<string, unknown>[]
-    items: Record<number, MusicInfo>
-    total: number
-  } | undefined
+interface SearchItem {
+  raw: Record<string, unknown>
+  musicInfo: MusicInfo
 }
 
-const searchCache: BatchCache = { _key: '' }
+let searchCache: {
+  key: string
+  pagination: ReturnType<typeof createSearchPagination<SearchItem>>
+} | undefined
+
+async function fetchSearchBatch(source: string, name: string, page: number, count: number) {
+  let lastError: string | null = null
+  for (let retry = 0; retry < 2; retry++) {
+    try {
+      const data = await apiCall({
+        types: 'search',
+        count: String(count),
+        source,
+        pages: String(page),
+        name,
+      })
+
+      if (data && data.error) {
+        lastError = String(data.error)
+        break
+      }
+
+      const rawList: Record<string, unknown>[] = Array.isArray(data) ? data : []
+      if (rawList.length > 0) return rawList
+
+      if (retry < 1) {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
+      }
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+      console.error(`[gdstudio] search request failed [${source}]:`, err)
+      notifyNetworkError(source)
+      if (retry < 1) {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
+      }
+    }
+  }
+
+  // gd API 限流/波动时可能返回空数组；保留失败路径，供同一页重试。
+  throw new Error(lastError || '搜索返回空结果(可能是 API 限流,请稍后重试)')
+}
 
 async function musicSearch(params: {
   source: string
@@ -545,98 +582,34 @@ async function musicSearch(params: {
     throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
   }
 
-  const searchKey = source + '|' + name + '|' + (artist || '')
-  const batchIndex = Math.floor((page - 1) / batchPageCount)
-  const offsetInBatch = (page - 1) % batchPageCount
-
-  if (searchCache._key !== searchKey) {
-    searchCache._key = searchKey
-    Object.keys(searchCache).forEach((k) => {
-      if (k !== '_key') delete searchCache[+k as unknown as number]
-    })
-  }
-
-  let batch = searchCache[batchIndex]
-  if (!batch) {
-    const apiPage = batchIndex + 1
+  const searchKey = JSON.stringify([source, name, artist || '', limit])
+  if (searchCache?.key !== searchKey) {
     const queryName = artist ? name + ' ' + artist : name
-
-    let rawList: Record<string, unknown>[] = []
-    let lastError: string | null = null
-    for (let retry = 0; retry < 2; retry++) {
-      try {
-        const data = await apiCall({
-          types: 'search',
-          count: String(fetchCount),
-          source,
-          pages: String(apiPage),
-          name: queryName,
-        })
-
-        if (data && data.error) {
-          lastError = String(data.error)
-          break
-        }
-
-        rawList = Array.isArray(data) ? data : []
-        if (rawList.length > 0) break
-
-        if (retry < 1) {
-          await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
-        }
-      } catch (_err) {
-        console.error(`[gdstudio] search request failed [${source}]:`, _err)
-        notifyNetworkError(source)
-        if (retry < 1) {
-          await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
-        }
-      }
-    }
-
-    // gd API 限流/波动时表现为无特征的空结果;按上游维护者建议抛错,
-    // 让主程序走失败路径(不缓存 + 提示重试),而不是当成"成功但无结果"
-    if (rawList.length === 0) {
-      throw new Error(lastError || '搜索返回空结果(可能是 API 限流,请稍后重试)')
-    }
-
-    let total: number
-    if (rawList.length >= fetchCount) {
-      total = apiPage * fetchCount + 1
-    } else {
-      total = (apiPage - 1) * fetchCount + rawList.length
-    }
-
-    const items: Record<number, MusicInfo> = {}
-    for (let i = 0; i < rawList.length; i++) {
-      items[i] = buildMusicInfo(rawList[i], source)
-    }
-
-    batch = { rawList, items, total }
-    if(rawList.length > 0)
-    {
-      searchCache[batchIndex] = batch
+    searchCache = {
+      key: searchKey,
+      pagination: createSearchPagination(
+        async (apiPage) => (await fetchSearchBatch(source, queryName, apiPage, fetchCount)).map((raw) => ({
+          raw,
+          musicInfo: buildMusicInfo(raw, source),
+        })),
+        (item) => item.musicInfo.id,
+        (error) => { console.warn(`[gdstudio] more search results unavailable [${source}], retry on next page:`, error) }
+      ),
     }
   }
-
-  const startIdx = offsetInBatch * limit
-  const endIdx = Math.min(startIdx + limit, batch.rawList.length)
+  // Each search owns its cache object, so a late request cannot overwrite a new query.
+  const { list, total } = await searchCache.pagination.getPage(page, limit)
 
   // org 音源不预加载音质/封面:每次签名请求都占上游配额,搜索界面严禁嗅探(防限流)
   if (!isOrgSource(source)) {
-    await Promise.all(Array.from({ length: endIdx - startIdx }, async (_item, index) => {
-      const itemIndex = startIdx + index
-      await hydrateMainApiSearchItem(source, batch.rawList[itemIndex], batch.items[itemIndex])
+    await Promise.all(list.map(async (item) => {
+      await hydrateMainApiSearchItem(source, item.raw, item.musicInfo)
     }))
   }
 
-  const pageItems: MusicInfo[] = []
-  for (let k = startIdx; k < endIdx; k++) {
-    pageItems.push(batch.items[k])
-  }
-
   return {
-    list: pageItems,
-    total: batch.total,
+    list: list.map((item) => item.musicInfo),
+    total,
     page,
     limit,
   }
