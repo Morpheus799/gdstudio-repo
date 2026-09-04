@@ -19,7 +19,7 @@ type ResourceContribution = NonNullable<NonNullable<ExtensionConfig['contributes
 
 const resources: ResourceContribution[] = [
   ...sources.map<ResourceContribution>(([id, name]) => ({
-    id: `gd_${id}`,
+    id: `gd-${id}`,
     name,
     resource: ['musicSearch', 'musicUrl', 'musicPic', 'musicLyric'],
   })),

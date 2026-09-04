@@ -15,10 +15,10 @@ export type GdSource = (typeof gdSources)[number][0]
 
 const sourceSet = new Set<string>(gdSources.map(([source]) => source))
 
-export const toHostSource = (source: GdSource) => `gd_${source}`
+export const toHostSource = (source: GdSource) => `gd-${source}`
 
 export const toGdSource = (source: string): GdSource | null => {
-  const value = source.startsWith('gd_') ? source.slice(3) : source
+  const value = source.startsWith('gd-') || source.startsWith('gd_') ? source.slice(3) : source
   return sourceSet.has(value) ? (value as GdSource) : null
 }
 
