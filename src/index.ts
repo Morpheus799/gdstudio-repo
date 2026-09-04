@@ -5,8 +5,6 @@ import { promptLegacyMigration, setupMigrationCommands, shouldRejectLegacySource
 import { showUpdateNotice } from './updateNotice'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
-const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
-const EMPTY_LYRIC = '[00:00.00]暂无歌词'
 const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
 
 // ========== org 音源(经签名服务器直连 GDStudio)==========
@@ -166,13 +164,14 @@ function logSearchResponse(source: string | number | null | undefined, data: unk
     artist: (item as Record<string, unknown>).artist,
     album: (item as Record<string, unknown>).album,
     pic_id: (item as Record<string, unknown>).pic_id,
+    lyric_id: (item as Record<string, unknown>).lyric_id,
   }))
   console.log(`[gdstudio] search response [${source}] first3: ${JSON.stringify(preview)}`)
 }
 
-function buildLyricInfo(musicInfo: Record<string, unknown>, lyric?: string | null, tlyric?: string | null) {
+function buildLyricInfo(musicInfo: Record<string, unknown>, lyric: string, tlyric?: string | null) {
   return {
-    lyric: lyric || EMPTY_LYRIC,
+    lyric,
     tlyric: tlyric || null,
     rlyric: null as string | null,
     awlyric: null as string | null,
@@ -203,6 +202,141 @@ function parseArtist(artist: unknown): string {
     .join('、')
 }
 
+function getOptionalResourceId(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const id = String(value).trim()
+  return id || null
+}
+
+type ResourceIdType = 'pic' | 'lyric'
+interface ResourceIds {
+  picId: string | null
+  lyricId: string | null
+}
+
+const resourceIdGettingPromises = new Map<string, Promise<ResourceIds>>()
+
+function hasOwnResourceId(meta: Record<string, unknown> | undefined, key: '_picId' | '_lyricId') {
+  return !!meta && Object.hasOwn(meta, key)
+}
+
+async function persistMigratedResourceIds(source: string, musicId: string, resourceIds: ResourceIds) {
+  const gdSource = toGdSource(source)
+  if (!gdSource || !musicList?.getAllUserLists || !musicList?.getListMusics || !musicList?.listAction) return
+
+  const allLists = await musicList.getAllUserLists()
+  const listInfos = [allLists.defaultList, allLists.loveList, allLists.lastPlayList, ...allLists.userList]
+  const expectedMusicId = buildMusicId(gdSource, musicId)
+  const visitedListIds = new Set<string>()
+  const updates: Array<{ id: string; musicInfo: Record<string, unknown> }> = []
+
+  for (const listInfo of listInfos) {
+    const listId = String(listInfo?.id || '')
+    if (!listId || visitedListIds.has(listId)) continue
+    visitedListIds.add(listId)
+
+    let musics: Array<Record<string, unknown>>
+    try {
+      musics = await musicList.getListMusics(listId) as unknown as Array<Record<string, unknown>>
+    } catch (err) {
+      console.warn(`[gdstudio] Failed to read list ${listId} during resource ID migration:`, err)
+      continue
+    }
+
+    for (const targetMusic of musics) {
+      if (targetMusic.isLocal || getOptionalResourceId(targetMusic.id) !== expectedMusicId) continue
+      const targetMeta = targetMusic.meta as Record<string, unknown> | undefined
+      if (!targetMeta || typeof targetMeta.source !== 'string' || toGdSource(targetMeta.source) !== gdSource) continue
+
+      const nextMeta = { ...targetMeta }
+      let changed = false
+      if (!hasOwnResourceId(targetMeta, '_picId')) {
+        nextMeta._picId = resourceIds.picId
+        changed = true
+      }
+      if (!hasOwnResourceId(targetMeta, '_lyricId')) {
+        nextMeta._lyricId = resourceIds.lyricId
+        changed = true
+      }
+      if (!changed) continue
+
+      nextMeta._gdResourceVersion = 1
+      updates.push({
+        id: listId,
+        musicInfo: {
+          ...targetMusic,
+          meta: nextMeta,
+        },
+      })
+    }
+  }
+
+  for (let index = 0; index < updates.length; index += 50) {
+    await musicList.listAction({
+      action: 'list_music_update',
+      data: updates.slice(index, index + 50),
+    } as never)
+  }
+  if (updates.length) console.log(`[gdstudio] Migrated resource IDs for ${source}:${musicId} in ${updates.length} list item(s)`)
+}
+
+async function ensureResourceIds(source: string, musicInfo: Record<string, unknown>, requiredType: ResourceIdType): Promise<ResourceIds> {
+  const meta = musicInfo.meta as Record<string, unknown> | undefined
+  const hadPicId = hasOwnResourceId(meta, '_picId')
+  const hadLyricId = hasOwnResourceId(meta, '_lyricId')
+  const currentIds: ResourceIds = {
+    picId: getOptionalResourceId(meta?._picId),
+    lyricId: getOptionalResourceId(meta?._lyricId),
+  }
+  if ((requiredType === 'pic' && hadPicId) || (requiredType === 'lyric' && hadLyricId)) return currentIds
+
+  const musicId = getRawMusicId(musicInfo)
+  const gdSource = toGdSource(source)
+  if (!gdSource || !musicId) throw new Error(`[${source}] Cannot migrate resource IDs for ${musicId || 'unknown music'}`)
+  const cacheKey = `${gdSource}|${musicId}`
+  let getting = resourceIdGettingPromises.get(cacheKey)
+  if (!getting) {
+    getting = (async () => {
+      const queryName = typeof musicInfo.name === 'string' ? musicInfo.name.trim() : ''
+      if (!queryName) throw new Error(`[${source}] Cannot migrate resource IDs without a music name`)
+      const searchData = await apiCall({
+        types: 'search',
+        count: '50',
+        source,
+        pages: '1',
+        name: queryName,
+      })
+      const searchList = (Array.isArray(searchData) ? searchData : []) as Array<Record<string, unknown>>
+      const exactMusic = searchList.find((item) => getOptionalResourceId(item.id) === musicId)
+      if (!exactMusic) throw new Error(`[${source}] Cannot find exact music ${musicId} while migrating resource IDs`)
+
+      const resolvedIds: ResourceIds = {
+        picId: getOptionalResourceId(exactMusic.pic_id),
+        lyricId: getOptionalResourceId(exactMusic.lyric_id),
+      }
+      await persistMigratedResourceIds(source, musicId, resolvedIds).catch((err) => {
+        console.error(`[gdstudio] Failed to persist resource IDs for ${source}:${musicId}:`, err)
+      })
+      return resolvedIds
+    })().finally(() => {
+      resourceIdGettingPromises.delete(cacheKey)
+    })
+    resourceIdGettingPromises.set(cacheKey, getting)
+  }
+
+  const resolvedIds = await getting
+  const mergedIds: ResourceIds = {
+    picId: hadPicId ? currentIds.picId : resolvedIds.picId,
+    lyricId: hadLyricId ? currentIds.lyricId : resolvedIds.lyricId,
+  }
+  if (meta) {
+    if (!hadPicId) meta._picId = mergedIds.picId
+    if (!hadLyricId) meta._lyricId = mergedIds.lyricId
+    meta._gdResourceVersion = 1
+  }
+  return mergedIds
+}
+
 type MusicInfo = ReturnType<typeof buildMusicInfo>
 
 function buildMusicInfo(item: Record<string, unknown>, source: string, actualBr?: number, picUrl?: string) {
@@ -225,7 +359,9 @@ function buildMusicInfo(item: Record<string, unknown>, source: string, actualBr?
       picUrl: picUrl || null,
       source,
       qualitys: actualBr ? buildQualitysFromBr(actualBr) : (shouldShowInitialQuality(source) ? buildInitialQualitys() : {}),
-      _picId: item.pic_id ? String(item.pic_id) : undefined,
+      _picId: getOptionalResourceId(item.pic_id),
+      _lyricId: getOptionalResourceId(item.lyric_id),
+      _gdResourceVersion: 1,
       createTime: now,
       updateTime: now,
       posTime: now,
@@ -235,33 +371,10 @@ function buildMusicInfo(item: Record<string, unknown>, source: string, actualBr?
 
 // ========== API 请求辅助 ==========
 
-const playbackPicIds = new Set<string>()
-const picUrlCache = new Map<string, string>()
 const picGettingPromises = new Map<string, Promise<string>>()
 
 function buildPicCacheKey(source: string, musicId: string) {
   return source + '|' + musicId
-}
-
-async function waitForPlaybackPicAllowed(cacheKey: string) {
-  if (playbackPicIds.has(cacheKey)) return true
-  for (let i = 0; i < 40; i++) {
-    await new Promise<void>((resolve) => { setTimeout(resolve, 250) })
-    if (playbackPicIds.has(cacheKey)) return true
-  }
-  return false
-}
-
-async function isCurrentPlayingMusic(hostMusicId: string) {
-  try {
-    const playInfo = await player?.getPlayInfo?.()
-    const index = Number((playInfo as { info?: { index?: number } } | undefined)?.info?.index)
-    const list = (playInfo as { list?: Array<{ musicInfo?: { id?: string } }> } | undefined)?.list
-    if (!Array.isArray(list) || index < 0 || index >= list.length) return false
-    return String(list[index]?.musicInfo?.id || '') === hostMusicId
-  } catch (_err) {
-    return false
-  }
 }
 
 function getMusicInfoSource(musicInfo: Record<string, unknown>) {
@@ -316,8 +429,6 @@ async function updatePlayingMusicPic(source: string, hostMusicId: string, picUrl
 
 function prefetchPlaybackPic(source: string, rawMusicId: string, hostMusicId: string, musicInfo: Record<string, unknown>) {
   const meta = musicInfo.meta as Record<string, unknown> | undefined
-  const cacheKey = buildPicCacheKey(source, rawMusicId)
-  playbackPicIds.add(cacheKey)
   void fetchMusicPic(source, musicInfo).then((url) => {
     if (meta) meta.picUrl = url
     void updatePlayingMusicPic(source, hostMusicId, url)
@@ -329,31 +440,12 @@ function prefetchPlaybackPic(source: string, rawMusicId: string, hostMusicId: st
 async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>) {
   const musicId = getRawMusicId(musicInfo)
   const cacheKey = buildPicCacheKey(source, musicId)
-  const cached = picUrlCache.get(cacheKey)
-  if (cached) return cached
-
   const getting = picGettingPromises.get(cacheKey)
   if (getting) return getting
 
   const promise = (async () => {
-    let picId: string | null = ((musicInfo.meta as Record<string, unknown> | undefined)?._picId as string) || null
-
-    if (!picId) {
-      try {
-        const queryName = String(musicInfo.name || '')
-        const sData = await apiCall({
-          types: 'search',
-          count: '1',
-          source,
-          pages: '1',
-          name: queryName,
-        })
-        const list = Array.isArray(sData) ? sData : []
-        if (list.length && list[0].pic_id) picId = String(list[0].pic_id)
-      } catch (_err) { /* ignore */ }
-    }
-
-    if (!picId) throw new Error('No pic_id found')
+    const { picId } = await ensureResourceIds(source, musicInfo, 'pic')
+    if (!picId) throw new Error(`[${source}] No pic_id available for ${musicId}`)
 
     const data = await apiCall({
       types: 'pic',
@@ -365,9 +457,7 @@ async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>)
     console.log(`[gdstudio] pic response [${source}] musicId=${musicId} picId=${picId}: ${getResponsePreview(data)}`)
 
     if (data && data.url) {
-      const url = String(data.url)
-      picUrlCache.set(cacheKey, url)
-      return url
+      return String(data.url)
     }
     throw new Error('No pic URL for pic_id ' + picId)
   })().finally(() => {
@@ -429,6 +519,7 @@ async function apiCallMainApi(params: Record<string, string | number | null | un
   if (statusCode !== 200) {
     console.error(`[gdstudio] non-200 response (${statusCode}):`, typeof resp.body === 'string' ? resp.body.slice(0, 500) : JSON.stringify(resp.body).slice(0, 500))
     notifyHttpError(statusCode, params.source)
+    throw new Error(`GDStudio API returned HTTP ${statusCode}`)
   }
   const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
   if (params.types === 'search') logSearchResponse(params.source, data)
@@ -508,6 +599,7 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
   if (statusCode !== 200) {
     console.error(`[gdstudio] non-200 response (${statusCode}):`, bodyPreview(resp.body, 500))
     notifyHttpError(statusCode, source)
+    throw new Error(`GDStudio upstream returned HTTP ${statusCode}`)
   }
   const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
   if (params.types === 'search') logSearchResponse(params.source, data)
@@ -688,16 +780,10 @@ async function musicPic(params: {
 }) {
   const source = params.source
   const musicInfo = params.musicInfo
-  const hostMusicId = String(musicInfo.id || '')
   const musicId = getRawMusicId(musicInfo)
-  const cacheKey = buildPicCacheKey(source, musicId)
-  const cached = picUrlCache.get(cacheKey)
-  if (cached) return cached
-  if (!playbackPicIds.has(cacheKey) && await isCurrentPlayingMusic(hostMusicId)) playbackPicIds.add(cacheKey)
-  if (!(await waitForPlaybackPicAllowed(cacheKey))) return NO_PIC_PLACEHOLDER
   return fetchMusicPic(source, musicInfo).catch((err) => {
     console.error(`[gdstudio] Failed to fetch pic for ${source}:${musicId}:`, err)
-    return NO_PIC_PLACEHOLDER
+    throw err
   })
 }
 
@@ -707,23 +793,27 @@ async function musicLyric(params: {
 }) {
   const source = params.source
   const musicInfo = params.musicInfo
-  const lyricId = getRawMusicId(musicInfo)
+  const musicId = getRawMusicId(musicInfo)
 
   try {
+    const { lyricId } = await ensureResourceIds(source, musicInfo, 'lyric')
+    if (!lyricId) throw new Error(`[${source}] No lyric_id available for ${musicId}`)
     const data = await apiCall({
       types: 'lyric',
       source,
       id: String(lyricId),
     })
+    const lyric = typeof data?.lyric === 'string' ? data.lyric.trim() : ''
+    if (!lyric) throw new Error(`[${source}] No lyric available for ${String(lyricId)}`)
 
     return buildLyricInfo(
       musicInfo,
-      (data && data.lyric) ? String(data.lyric) : null,
-      (data && data.tlyric) ? String(data.tlyric) : null
+      lyric,
+      typeof data?.tlyric === 'string' && data.tlyric.trim() ? data.tlyric : null
     )
-  } catch (_err) {
-    console.error(`[gdstudio] Failed to get lyric [${source}] id=${String(lyricId)}:`, _err)
-    return buildLyricInfo(musicInfo)
+  } catch (err) {
+    console.error(`[gdstudio] Failed to get lyric [${source}] musicId=${musicId}:`, err)
+    throw err
   }
 }
 
