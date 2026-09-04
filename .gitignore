@@ -1,5 +1,6 @@
 dist
 build
+outputs
 node_modules
 .env
 .vscode

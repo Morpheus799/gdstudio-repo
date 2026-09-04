@@ -1,6 +1,6 @@
 {
   "name": "gdstudio-repo",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "keywords": [
     "any-listen",
     "any-listen-extension"
@@ -12,6 +12,9 @@
   "scripts": {
     "build": "extension-kit --build",
     "pub": "extension-kit --publish"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@any-listen/extension-kit": "^0.1.9",

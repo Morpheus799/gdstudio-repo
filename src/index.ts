@@ -1,5 +1,7 @@
 import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app, dataConverter } from './shared/hostApi'
 import { createSearchPagination } from './shared/searchPagination'
+import { buildMusicId, getGdSource, getRawMusicId, toGdSource } from './identity'
+import { promptLegacyMigration, setupMigrationCommands, shouldRejectLegacySource } from './migration'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
 const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
@@ -18,7 +20,10 @@ let preloadQualityOnSearch = true
 let signServerUrl = ''
 let signKey = ''
 
-const isOrgSource = (source: string | number | null | undefined) => ORG_SOURCES.has(String(source || ''))
+const isOrgSource = (source: string | number | null | undefined) => {
+  const value = String(source || '')
+  return ORG_SOURCES.has(toGdSource(value) || value)
+}
 
 void configuration?.getConfigs?.<[boolean, string, string]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY]).then(([preload, signUrl, signKeyValue]) => {
   preloadQualityOnSearch = preload !== false
@@ -208,7 +213,7 @@ function buildMusicInfo(item: Record<string, unknown>, source: string, actualBr?
   }
 
   return {
-    id: String(item.id),
+    id: buildMusicId(getGdSource(source), String(item.id)),
     name: String(item.name || ''),
     singer: parseArtist(item.artist),
     interval,
@@ -246,13 +251,13 @@ async function waitForPlaybackPicAllowed(cacheKey: string) {
   return false
 }
 
-async function isCurrentPlayingMusic(musicId: string) {
+async function isCurrentPlayingMusic(hostMusicId: string) {
   try {
     const playInfo = await player?.getPlayInfo?.()
     const index = Number((playInfo as { info?: { index?: number } } | undefined)?.info?.index)
     const list = (playInfo as { list?: Array<{ musicInfo?: { id?: string } }> } | undefined)?.list
     if (!Array.isArray(list) || index < 0 || index >= list.length) return false
-    return String(list[index]?.musicInfo?.id || '') === musicId
+    return String(list[index]?.musicInfo?.id || '') === hostMusicId
   } catch (_err) {
     return false
   }
@@ -262,7 +267,7 @@ function getMusicInfoSource(musicInfo: Record<string, unknown>) {
   return String((musicInfo.meta as Record<string, unknown> | undefined)?.source || '')
 }
 
-async function updatePlayingMusicInfo(source: string, musicId: string, update: (musicInfo: Record<string, unknown>) => void) {
+async function updatePlayingMusicInfo(source: string, hostMusicId: string, update: (musicInfo: Record<string, unknown>) => void) {
   try {
     for (let retry = 0; retry < 12; retry++) {
       const playInfo = await player?.getPlayInfo?.()
@@ -270,7 +275,7 @@ async function updatePlayingMusicInfo(source: string, musicId: string, update: (
       if (Array.isArray(list)) {
         const item = list.find((listItem) => {
           const musicInfo = listItem?.musicInfo
-          return musicInfo && String(musicInfo.id || '') === musicId && getMusicInfoSource(musicInfo) === source
+          return musicInfo && String(musicInfo.id || '') === hostMusicId && getMusicInfoSource(musicInfo) === source
         })
         const currentMusicInfo = item?.musicInfo
         const listId = item?.listId
@@ -294,34 +299,34 @@ async function updatePlayingMusicInfo(source: string, musicId: string, update: (
   }
 }
 
-async function updatePlayingMusicQuality(source: string, musicId: string, actualBr: number) {
-  await updatePlayingMusicInfo(source, musicId, (musicInfo) => {
+async function updatePlayingMusicQuality(source: string, hostMusicId: string, actualBr: number) {
+  await updatePlayingMusicInfo(source, hostMusicId, (musicInfo) => {
     const targetMeta = musicInfo.meta as Record<string, unknown> | undefined
     if (targetMeta) targetMeta.qualitys = buildQualitysFromBr(actualBr)
   })
 }
 
-async function updatePlayingMusicPic(source: string, musicId: string, picUrl: string) {
-  await updatePlayingMusicInfo(source, musicId, (musicInfo) => {
+async function updatePlayingMusicPic(source: string, hostMusicId: string, picUrl: string) {
+  await updatePlayingMusicInfo(source, hostMusicId, (musicInfo) => {
     const targetMeta = musicInfo.meta as Record<string, unknown> | undefined
     if (targetMeta) targetMeta.picUrl = picUrl
   })
 }
 
-function prefetchPlaybackPic(source: string, musicId: string, musicInfo: Record<string, unknown>) {
+function prefetchPlaybackPic(source: string, rawMusicId: string, hostMusicId: string, musicInfo: Record<string, unknown>) {
   const meta = musicInfo.meta as Record<string, unknown> | undefined
-  const cacheKey = buildPicCacheKey(source, musicId)
+  const cacheKey = buildPicCacheKey(source, rawMusicId)
   playbackPicIds.add(cacheKey)
   void fetchMusicPic(source, musicInfo).then((url) => {
     if (meta) meta.picUrl = url
-    void updatePlayingMusicPic(source, musicId, url)
+    void updatePlayingMusicPic(source, hostMusicId, url)
   }).catch((err) => {
-    console.error(`[gdstudio] Failed to fetch pic for ${source}:${musicId}:`, err)
+    console.error(`[gdstudio] Failed to fetch pic for ${source}:${rawMusicId}:`, err)
   })
 }
 
 async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>) {
-  const musicId = String(musicInfo.id || ((musicInfo.meta as Record<string, unknown> | undefined)?.musicId) || '')
+  const musicId = getRawMusicId(musicInfo)
   const cacheKey = buildPicCacheKey(source, musicId)
   const cached = picUrlCache.get(cacheKey)
   if (cached) return cached
@@ -509,7 +514,10 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
 }
 
 function apiCall(params: Record<string, string | number | null | undefined>) {
-  return isOrgSource(params.source) ? apiCallOrg(params) : apiCallMainApi(params)
+  const source = String(params.source || '')
+  const logicalSource = toGdSource(source) || source
+  const normalizedParams = source === logicalSource ? params : { ...params, source: logicalSource }
+  return isOrgSource(logicalSource) ? apiCallOrg(normalizedParams) : apiCallMainApi(normalizedParams)
 }
 
 // ========== 资源操作 ==========
@@ -623,8 +631,13 @@ async function musicUrl(params: {
   const source = params.source
   const musicInfo = params.musicInfo
   const quality = params.quality
-  const musicId = String(musicInfo.id || ((musicInfo.meta as Record<string, unknown> | undefined)?.musicId) || '')
-  prefetchPlaybackPic(source, musicId, musicInfo)
+  if (shouldRejectLegacySource(source)) {
+    await promptLegacyMigration()
+    throw new Error('GDSTUDIO_IDENTITY_MIGRATION_REQUIRED')
+  }
+  const hostMusicId = String(musicInfo.id || '')
+  const musicId = getRawMusicId(musicInfo)
+  prefetchPlaybackPic(source, musicId, hostMusicId, musicInfo)
 
   // 从用户选择的音质开始降级:只尝试偏好档及以下(如 320k → 320,192,128),
   // 不再像之前那样偏好档失败后先跳回 999 再往下降(org 音源白烧签名配额);
@@ -652,7 +665,7 @@ async function musicUrl(params: {
         const actualBr = data.br != null ? Number(data.br) : br
         const meta = musicInfo.meta as Record<string, unknown> | undefined
         if (meta) meta.qualitys = buildQualitysFromBr(actualBr)
-        void updatePlayingMusicQuality(source, musicId, actualBr)
+        void updatePlayingMusicQuality(source, hostMusicId, actualBr)
         return { url: String(data.url), quality: brToQuality(actualBr) }
       }
     } catch (err) {
@@ -674,11 +687,12 @@ async function musicPic(params: {
 }) {
   const source = params.source
   const musicInfo = params.musicInfo
-  const musicId = String(musicInfo.id || ((musicInfo.meta as Record<string, unknown> | undefined)?.musicId) || '')
+  const hostMusicId = String(musicInfo.id || '')
+  const musicId = getRawMusicId(musicInfo)
   const cacheKey = buildPicCacheKey(source, musicId)
   const cached = picUrlCache.get(cacheKey)
   if (cached) return cached
-  if (!playbackPicIds.has(cacheKey) && await isCurrentPlayingMusic(musicId)) playbackPicIds.add(cacheKey)
+  if (!playbackPicIds.has(cacheKey) && await isCurrentPlayingMusic(hostMusicId)) playbackPicIds.add(cacheKey)
   if (!(await waitForPlaybackPicAllowed(cacheKey))) return NO_PIC_PLACEHOLDER
   return fetchMusicPic(source, musicInfo).catch((err) => {
     console.error(`[gdstudio] Failed to fetch pic for ${source}:${musicId}:`, err)
@@ -692,7 +706,7 @@ async function musicLyric(params: {
 }) {
   const source = params.source
   const musicInfo = params.musicInfo
-  const lyricId = ((musicInfo.meta as Record<string, unknown> | undefined)?.musicId as string) || musicInfo.id
+  const lyricId = getRawMusicId(musicInfo)
 
   try {
     const data = await apiCall({
@@ -721,3 +735,7 @@ registerResourceAction({
   musicPic,
   musicLyric,
 } as never)
+
+void setupMigrationCommands().catch((err) => {
+  console.error('[gdstudio] Failed to register migration commands:', err)
+})
