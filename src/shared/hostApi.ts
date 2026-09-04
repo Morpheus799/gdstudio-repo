@@ -8,6 +8,7 @@ export const console = {
 }
 
 export const version = api.env.version
+export const extensionVersion = api.env.extensionVersion
 export const registerResourceAction = api.registerResourceAction
 export const player = api.player
 export const musicList = api.musicList

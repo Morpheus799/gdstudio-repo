@@ -2,6 +2,7 @@ import { registerResourceAction, request as apiRequest, console, player, musicLi
 import { createSearchPagination } from './shared/searchPagination'
 import { buildMusicId, getGdSource, getRawMusicId, toGdSource } from './identity'
 import { promptLegacyMigration, setupMigrationCommands, shouldRejectLegacySource } from './migration'
+import { showUpdateNotice } from './updateNotice'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
 const NO_PIC_PLACEHOLDER = './gdstudio-no-pic'
@@ -738,4 +739,8 @@ registerResourceAction({
 
 void setupMigrationCommands().catch((err) => {
   console.error('[gdstudio] Failed to register migration commands:', err)
+})
+
+void showUpdateNotice().catch((err) => {
+  console.error('[gdstudio] Failed to show update notice:', err)
 })
