@@ -42,7 +42,7 @@ const config: ExtensionConfig = {
   target_engine: '1.3.1',
   categories: [],
   tags: [],
-  download_url_template: 'https://github.com/morpheus315/gdstudio-repo/releases/download/v{version}',
+  download_url_template: 'https://github.com/Morpheus799/gdstudio-repo/releases/download/v{version}',
   icon: './resources/icon.png',
   grant: ['internet', 'player', 'music_list'],
   contributes: {
