@@ -6,33 +6,42 @@ import { showUpdateNotice } from './updateNotice'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
 const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
+const CONFIG_USE_ORG_SOURCE = 'useOrgSource'
 
 // ========== org 音源(经签名服务器直连 GDStudio)==========
 
-// org 系列音源:与主 API 音源(netease/kuwo/joox/bilibili)不同,
+// org 系列音源及启用 useOrgSource 后的主 API 音源(netease/kuwo/joox/bilibili):
 // 请求需带签名,由 gdstudio-server 的 /sign 端点组装成品请求后按原样发出
 const ORG_SOURCES = new Set(['tencent', 'tidal', 'qobuz', 'apple', 'ytmusic', 'spotify'])
 const CONFIG_SIGN_SERVER_URL = 'signServerUrl'
 const CONFIG_SIGN_KEY = 'signKey'
 
 let preloadQualityOnSearch = true
+let useOrgSource = false
 let signServerUrl = ''
 let signKey = ''
 
 const isOrgSource = (source: string | number | null | undefined) => {
   const value = String(source || '')
-  return ORG_SOURCES.has(toGdSource(value) || value)
+  return useOrgSource || ORG_SOURCES.has(toGdSource(value) || value)
 }
 
-void configuration?.getConfigs?.<[boolean, string, string]>([CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY]).then(([preload, signUrl, signKeyValue]) => {
+const configReady = configuration?.getConfigs?.<[boolean, string, string, boolean]>([
+  CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY, CONFIG_USE_ORG_SOURCE,
+]).then(([preload, signUrl, signKeyValue, useOrg]) => {
   preloadQualityOnSearch = preload !== false
   signServerUrl = typeof signUrl === 'string' ? signUrl.trim() : ''
   signKey = typeof signKeyValue === 'string' ? signKeyValue.trim() : ''
+  useOrgSource = useOrg === true
 }).catch(() => {})
 
 configuration?.onConfigChanged?.((keys: string[], config: Record<string, unknown>) => {
   if (keys.includes(CONFIG_PRELOAD_QUALITY_ON_SEARCH)) {
     preloadQualityOnSearch = config[CONFIG_PRELOAD_QUALITY_ON_SEARCH] !== false
+  }
+  if (keys.includes(CONFIG_USE_ORG_SOURCE)) {
+    useOrgSource = config[CONFIG_USE_ORG_SOURCE] === true
+    searchCache = undefined
   }
   if (keys.includes(CONFIG_SIGN_SERVER_URL)) {
     signServerUrl = typeof config[CONFIG_SIGN_SERVER_URL] === 'string' ? config[CONFIG_SIGN_SERVER_URL].trim() : ''
@@ -281,6 +290,7 @@ async function persistMigratedResourceIds(source: string, musicId: string, resou
 }
 
 async function ensureResourceIds(source: string, musicInfo: Record<string, unknown>, requiredType: ResourceIdType): Promise<ResourceIds> {
+  await configReady
   const meta = musicInfo.meta as Record<string, unknown> | undefined
   const hadPicId = hasOwnResourceId(meta, '_picId')
   const hadLyricId = hasOwnResourceId(meta, '_lyricId')
@@ -293,7 +303,7 @@ async function ensureResourceIds(source: string, musicInfo: Record<string, unkno
   const musicId = getRawMusicId(musicInfo)
   const gdSource = toGdSource(source)
   if (!gdSource || !musicId) throw new Error(`[${source}] Cannot migrate resource IDs for ${musicId || 'unknown music'}`)
-  const cacheKey = `${gdSource}|${musicId}`
+  const cacheKey = buildResourceCacheKey(gdSource, musicId)
   let getting = resourceIdGettingPromises.get(cacheKey)
   if (!getting) {
     getting = (async () => {
@@ -373,8 +383,8 @@ function buildMusicInfo(item: Record<string, unknown>, source: string, actualBr?
 
 const picGettingPromises = new Map<string, Promise<string>>()
 
-function buildPicCacheKey(source: string, musicId: string) {
-  return source + '|' + musicId
+function buildResourceCacheKey(source: string, musicId: string) {
+  return `${isOrgSource(source) ? 'org' : 'main'}|${source}|${musicId}`
 }
 
 function getMusicInfoSource(musicInfo: Record<string, unknown>) {
@@ -438,8 +448,9 @@ function prefetchPlaybackPic(source: string, rawMusicId: string, hostMusicId: st
 }
 
 async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>) {
+  await configReady
   const musicId = getRawMusicId(musicInfo)
-  const cacheKey = buildPicCacheKey(source, musicId)
+  const cacheKey = buildResourceCacheKey(source, musicId)
   const getting = picGettingPromises.get(cacheKey)
   if (getting) return getting
 
@@ -606,7 +617,8 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
   return data
 }
 
-function apiCall(params: Record<string, string | number | null | undefined>) {
+async function apiCall(params: Record<string, string | number | null | undefined>): ReturnType<typeof apiCallMainApi> {
+  await configReady
   const source = String(params.source || '')
   const logicalSource = toGdSource(source) || source
   const normalizedParams = source === logicalSource ? params : { ...params, source: logicalSource }
@@ -669,6 +681,7 @@ async function musicSearch(params: {
   page?: number
   limit?: number
 }) {
+  await configReady
   const source = params.source
   const name = params.name
   const artist = params.artist

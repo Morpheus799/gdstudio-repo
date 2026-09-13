@@ -24,19 +24,19 @@ Authorization: Bearer <signKey>
 
 所有请求都包含：
 
-| 参数 | 必填 | 说明 |
-|---|---|---|
-| `op` | 是 | 操作类型：`search`、`url`、`pic` 或 `lyric` |
-| `source` | 是 | 音源：`tencent`、`tidal`、`qobuz`、`apple`、`ytmusic` 或 `spotify` |
+| 参数     | 必填 | 说明                                                                                                                                   |
+| -------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `op`     | 是   | 操作类型：`search`、`url`、`pic` 或 `lyric`                                                                                            |
+| `source` | 是   | 音源：`tencent`、`tidal`、`qobuz`、`apple`、`ytmusic` 或 `spotify`；启用 `useOrgSource` 后也包含 `netease`、`kuwo`、`joox`、`bilibili` |
 
 各操作的业务参数如下：
 
-| `op` | 必填参数 | 可选参数 | `id` 含义 |
-|---|---|---|---|
-| `search` | `name` | `page`、`count` | 不使用 `id` |
-| `url` | `id` | `br` | 搜索结果中的歌曲 `id` |
-| `pic` | `id` | `size` | 搜索结果中的 `pic_id` |
-| `lyric` | `id` | 无 | 搜索结果中的 `lyric_id` |
+| `op`     | 必填参数 | 可选参数        | `id` 含义               |
+| -------- | -------- | --------------- | ----------------------- |
+| `search` | `name`   | `page`、`count` | 不使用 `id`             |
+| `url`    | `id`     | `br`            | 搜索结果中的歌曲 `id`   |
+| `pic`    | `id`     | `size`          | 搜索结果中的 `pic_id`   |
+| `lyric`  | `id`     | 无              | 搜索结果中的 `lyric_id` |
 
 请求示例：
 
@@ -82,12 +82,12 @@ Authorization: Bearer <signKey>
 
 `req` 字段要求：
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `url` | `string` | 是 | 完整的上游请求 URL |
-| `method` | `string` | 是 | 上游请求方法，通常为 `GET` 或 `POST` |
-| `headers` | `Record<string, string>` | 是 | 上游请求头 |
-| `body` | `string \| null` | 是 | 上游请求体；无请求体时为 `null` |
+| 字段      | 类型                     | 必填 | 说明                                 |
+| --------- | ------------------------ | ---- | ------------------------------------ |
+| `url`     | `string`                 | 是   | 完整的上游请求 URL                   |
+| `method`  | `string`                 | 是   | 上游请求方法，通常为 `GET` 或 `POST` |
+| `headers` | `Record<string, string>` | 是   | 上游请求头                           |
+| `body`    | `string \| null`         | 是   | 上游请求体；无请求体时为 `null`      |
 
 服务器可以附加 `method`、`ts`、`futureMs`、`expiresMs`、`version` 等顶层字段，扩展会忽略这些附加字段。
 
@@ -106,11 +106,11 @@ Authorization: Bearer <signKey>
 
 建议状态码：
 
-| 状态码 | 含义 |
-|---|---|
-| `400` | `op` 或业务参数无效 |
-| `401` | Bearer token 缺失或错误 |
-| `503` | 当前无法生成签名请求 |
+| 状态码 | 含义                    |
+| ------ | ----------------------- |
+| `400`  | `op` 或业务参数无效     |
+| `401`  | Bearer token 缺失或错误 |
+| `503`  | 当前无法生成签名请求    |
 
 即使 HTTP 状态为 `200`，当 `ok` 不为 `true`、`req` 缺失或 `req.url` 为空时，扩展也会将本次签名视为失败。
 

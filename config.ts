@@ -82,6 +82,13 @@ const config: ExtensionConfig = {
         type: 'input',
         default: '',
       },
+      {
+        field: 'useOrgSource',
+        name: '全部使用 org 音源',
+        description: '当主音源不稳定时使用org音源',
+        type: 'boolean',
+        default: false,
+      },
     ],
   },
 }
