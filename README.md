@@ -1,6 +1,6 @@
 # gdstudio-repo
 
-用于 Any Listen 的 GDStudio 音乐资源扩展。
+用于 Any Listen 的 GDStudio 音乐资源扩展。**有关签名服务器疑问请移步置顶Issue**
 
 ## 签名服务器接口
 
