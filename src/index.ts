@@ -2,46 +2,45 @@ import { registerResourceAction, request as apiRequest, console, player, musicLi
 import { createSearchPagination } from './shared/searchPagination'
 import { buildMusicId, getGdSource, getRawMusicId, toGdSource } from './identity'
 import { promptLegacyMigration, setupMigrationCommands, shouldRejectLegacySource } from './migration'
+import { calcSign } from './sign'
 import { showUpdateNotice } from './updateNotice'
 
-const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
+// 主 API 基址取"签名服务器地址"配置(拼出 <地址>/api.php 与 <地址>/time,模拟官网页面的同源请求),
+// 未配置时回退官网播放器站点
+const DEFAULT_API_BASE = 'https://music.gdstudio.org'
+// s 按 time 前 9 位(10 秒一档)计算、服务端约 20 秒内有效,缓存 10 秒不会跨档过期
+const SIGN_TIME_TTL = 10_000
 const CONFIG_PRELOAD_QUALITY_ON_SEARCH = 'preloadQualityOnSearch'
-const CONFIG_USE_ORG_SOURCE = 'useOrgSource'
 
 // ========== org 音源(经签名服务器直连 GDStudio)==========
 
-// org 系列音源及启用 useOrgSource 后的主 API 音源(netease/kuwo/joox/bilibili):
-// 请求需带签名,由 gdstudio-server 的 /sign 端点组装成品请求后按原样发出
+// org 系列音源:请求需带签名,由 gdstudio-server 的 /sign 端点组装成品请求后按原样发出。
+// 主音源(netease/kuwo/joox/bilibili)固定走主 API(配置地址 + 本地计算 s),永不请求 /sign
 const ORG_SOURCES = new Set(['tencent', 'tidal', 'qobuz', 'apple', 'ytmusic', 'spotify'])
 const CONFIG_SIGN_SERVER_URL = 'signServerUrl'
 const CONFIG_SIGN_KEY = 'signKey'
 
-let preloadQualityOnSearch = true
-let useOrgSource = false
+// 默认关闭:开启后每次搜索会对全部结果并发探测音质,极易触发 CF 403 与请求风暴
+let preloadQualityOnSearch = false
 let signServerUrl = ''
 let signKey = ''
 
 const isOrgSource = (source: string | number | null | undefined) => {
   const value = String(source || '')
-  return useOrgSource || ORG_SOURCES.has(toGdSource(value) || value)
+  return ORG_SOURCES.has(toGdSource(value) || value)
 }
 
-const configReady = configuration?.getConfigs?.<[boolean, string, string, boolean]>([
-  CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY, CONFIG_USE_ORG_SOURCE,
-]).then(([preload, signUrl, signKeyValue, useOrg]) => {
-  preloadQualityOnSearch = preload !== false
+const configReady = configuration?.getConfigs?.<[boolean, string, string]>([
+  CONFIG_PRELOAD_QUALITY_ON_SEARCH, CONFIG_SIGN_SERVER_URL, CONFIG_SIGN_KEY,
+]).then(([preload, signUrl, signKeyValue]) => {
+  preloadQualityOnSearch = preload === true
   signServerUrl = typeof signUrl === 'string' ? signUrl.trim() : ''
   signKey = typeof signKeyValue === 'string' ? signKeyValue.trim() : ''
-  useOrgSource = useOrg === true
 }).catch(() => {})
 
 configuration?.onConfigChanged?.((keys: string[], config: Record<string, unknown>) => {
   if (keys.includes(CONFIG_PRELOAD_QUALITY_ON_SEARCH)) {
-    preloadQualityOnSearch = config[CONFIG_PRELOAD_QUALITY_ON_SEARCH] !== false
-  }
-  if (keys.includes(CONFIG_USE_ORG_SOURCE)) {
-    useOrgSource = config[CONFIG_USE_ORG_SOURCE] === true
-    searchCache = undefined
+    preloadQualityOnSearch = config[CONFIG_PRELOAD_QUALITY_ON_SEARCH] === true
   }
   if (keys.includes(CONFIG_SIGN_SERVER_URL)) {
     signServerUrl = typeof config[CONFIG_SIGN_SERVER_URL] === 'string' ? config[CONFIG_SIGN_SERVER_URL].trim() : ''
@@ -225,6 +224,15 @@ interface ResourceIds {
 
 const resourceIdGettingPromises = new Map<string, Promise<ResourceIds>>()
 
+// 会话级结果缓存:宿主会周期性对列表轮流重拉各渠道的封面/歌词(多渠道渲染),
+// 命中缓存直接返回不再打接口,终结日志刷屏
+const resourceIdCache = new Map<string, ResourceIds>()
+const picUrlCache = new Map<string, string>()
+const lyricResultCache = new Map<string, { lyric: string; tlyric: string | null }>()
+// 歌词失败负缓存(bilibili 歌词恒为空会引发宿主无限重试):60 秒内直接抛错,不重复打接口
+const LYRIC_FAIL_TTL = 60_000
+const lyricFailUntil = new Map<string, number>()
+
 function hasOwnResourceId(meta: Record<string, unknown> | undefined, key: '_picId' | '_lyricId') {
   return !!meta && Object.hasOwn(meta, key)
 }
@@ -304,8 +312,9 @@ async function ensureResourceIds(source: string, musicInfo: Record<string, unkno
   const gdSource = toGdSource(source)
   if (!gdSource || !musicId) throw new Error(`[${source}] Cannot migrate resource IDs for ${musicId || 'unknown music'}`)
   const cacheKey = buildResourceCacheKey(gdSource, musicId)
-  let getting = resourceIdGettingPromises.get(cacheKey)
-  if (!getting) {
+  const cachedIds = resourceIdCache.get(cacheKey)
+  let getting = cachedIds ? undefined : resourceIdGettingPromises.get(cacheKey)
+  if (!getting && !cachedIds) {
     getting = (async () => {
       const queryName = typeof musicInfo.name === 'string' ? musicInfo.name.trim() : ''
       if (!queryName) throw new Error(`[${source}] Cannot migrate resource IDs without a music name`)
@@ -324,6 +333,7 @@ async function ensureResourceIds(source: string, musicInfo: Record<string, unkno
         picId: getOptionalResourceId(exactMusic.pic_id),
         lyricId: getOptionalResourceId(exactMusic.lyric_id),
       }
+      if (resolvedIds.picId || resolvedIds.lyricId) resourceIdCache.set(cacheKey, resolvedIds)
       await persistMigratedResourceIds(source, musicId, resolvedIds).catch((err) => {
         console.error(`[gdstudio] Failed to persist resource IDs for ${source}:${musicId}:`, err)
       })
@@ -334,7 +344,7 @@ async function ensureResourceIds(source: string, musicInfo: Record<string, unkno
     resourceIdGettingPromises.set(cacheKey, getting)
   }
 
-  const resolvedIds = await getting
+  const resolvedIds = cachedIds ?? (await getting)
   const mergedIds: ResourceIds = {
     picId: hadPicId ? currentIds.picId : resolvedIds.picId,
     lyricId: hadLyricId ? currentIds.lyricId : resolvedIds.lyricId,
@@ -451,6 +461,8 @@ async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>)
   await configReady
   const musicId = getRawMusicId(musicInfo)
   const cacheKey = buildResourceCacheKey(source, musicId)
+  const cachedPicUrl = picUrlCache.get(cacheKey)
+  if (cachedPicUrl) return cachedPicUrl
   const getting = picGettingPromises.get(cacheKey)
   if (getting) return getting
 
@@ -468,7 +480,9 @@ async function fetchMusicPic(source: string, musicInfo: Record<string, unknown>)
     console.log(`[gdstudio] pic response [${source}] musicId=${musicId} picId=${picId}: ${getResponsePreview(data)}`)
 
     if (data && data.url) {
-      return String(data.url)
+      const url = String(data.url)
+      picUrlCache.set(cacheKey, url)
+      return url
     }
     throw new Error('No pic URL for pic_id ' + picId)
   })().finally(() => {
@@ -507,43 +521,115 @@ async function hydrateMainApiSearchItem(source: string, rawItem: Record<string, 
   meta._detailsLoaded = true
 }
 
-async function apiCallMainApi(params: Record<string, string | number | null | undefined>) {
-  const body = buildQuery(params)
+let cachedSignTime: { value: string; at: number } | undefined
 
-  let resp: { statusCode?: number; body: unknown; headers?: Record<string, unknown> }
+function getMainApiBase(): string {
+  return (signServerUrl || DEFAULT_API_BASE).replace(/\/+$/, '')
+}
+
+// 主 API 串行队列:搜索预加载会对每条结果 Promise.all 并发探测音质/封面(~60 个请求),
+// 突发并发会触发 Cloudflare 403 挑战页(响应体 "Just a moment...")。
+// 固定最小间隔摊平突发;一旦吃到 403,后续请求先等冷却再发。
+const MAIN_REQ_MIN_INTERVAL = 150
+const CF_CHALLENGE_COOLDOWN = 8000
+let mainReqChain: Promise<unknown> = Promise.resolve()
+let mainReqLastAt = 0
+let cfChallengeUntil = 0
+
+function enqueueMainReq<T>(task: () => Promise<T>): Promise<T> {
+  const run = mainReqChain.then(async () => {
+    const challengeWait = cfChallengeUntil - Date.now()
+    if (challengeWait > 0) await new Promise((resolve) => { setTimeout(resolve, challengeWait) })
+    const gapWait = mainReqLastAt + MAIN_REQ_MIN_INTERVAL - Date.now()
+    if (gapWait > 0) await new Promise((resolve) => { setTimeout(resolve, gapWait) })
+    // eslint-disable-next-line require-atomic-updates -- 队列串行执行,同一时刻只有本闭包读写该变量
+    mainReqLastAt = Date.now()
+    return task()
+  })
+  mainReqChain = run.catch(() => {})
+  return run
+}
+
+async function getSignTime(): Promise<string> {
+  const now = Date.now()
+  if (cachedSignTime && now - cachedSignTime.at < SIGN_TIME_TTL) return cachedSignTime.value
+  const url = `${getMainApiBase()}/time`
   try {
-    resp = await apiRequest(MAIN_API_URL + '?' + body, {
+    const resp = await apiRequest(url, {
       method: 'GET',
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'X-Requested-With': 'XMLHttpRequest',
-        Referer: 'https://music.gdstudio.org/',
-      },
+      timeout: 8000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     })
+    // host 可能对纯数字 body 自动 JSON.parse 成 number;非 200 时 body 可能是错误页/对象
+    const raw = resp.body
+    const value = (typeof raw === 'string' || typeof raw === 'number' ? String(raw) : '').trim()
+    if (!/^\d{9,}$/.test(value)) {
+      throw new Error(`unexpected time response: status=${resp.statusCode} type=${typeof raw} body=${value.slice(0, 60)}`)
+    }
+    // eslint-disable-next-line require-atomic-updates -- 每次请求都重新取 time,晚几毫秒写入无影响
+    cachedSignTime = { value, at: Date.now() }
+    return value
   } catch (err) {
-    console.error(`[gdstudio] request failed [${params.source}] types=${params.types}:`, err)
-    notifyNetworkError(params.source)
-    throw err
+    // 时间端点不可用时退回本地时钟:依赖 NTP,偏差超过服务端签名窗口则本次请求会被拒
+    console.warn('[gdstudio] failed to fetch sign time, fallback to local clock:', err)
+    return String(Math.floor(Date.now() / 1000))
   }
-  const statusCode = resp.statusCode ?? '?'
-  if (statusCode !== 200) {
-    console.error(`[gdstudio] non-200 response (${statusCode}):`, typeof resp.body === 'string' ? resp.body.slice(0, 500) : JSON.stringify(resp.body).slice(0, 500))
-    notifyHttpError(statusCode, params.source)
-    throw new Error(`GDStudio API returned HTTP ${statusCode}`)
-  }
-  const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
-  if (params.types === 'search') logSearchResponse(params.source, data)
-  return data
+}
+
+async function apiCallMainApi(params: Record<string, string | number | null | undefined>): Promise<unknown> {
+  // 搜索按 name 签名,其余(url/pic/lyric)按 id 签名,与官网一致
+  const signValue = String((params.types === 'search' ? params.name : params.id) ?? '')
+  return enqueueMainReq(async () => {
+    const body = buildQuery({ ...params, s: calcSign(await getSignTime(), signValue) })
+    const url = `${getMainApiBase()}/api.php?${body}`
+
+    let resp: { statusCode?: number; body: unknown; headers?: Record<string, unknown> }
+    try {
+      resp = await apiRequest(url, {
+        method: 'GET',
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: 'https://music.gdstudio.org/',
+        },
+      })
+    } catch (err) {
+      console.error(`[gdstudio] request failed [${params.source}] types=${params.types}:`, err)
+      notifyNetworkError(params.source)
+      throw err
+    }
+    const statusCode = resp.statusCode ?? '?'
+    if (statusCode !== 200) {
+      // 签名可能过期(时间档已翻),清缓存让重试取新 time;403 为 CF 挑战,进入冷却
+      cachedSignTime = undefined
+      if (statusCode === 403) cfChallengeUntil = Date.now() + CF_CHALLENGE_COOLDOWN
+      console.error(`[gdstudio] non-200 response (${statusCode}):`, typeof resp.body === 'string' ? resp.body.slice(0, 500) : JSON.stringify(resp.body).slice(0, 500))
+      notifyHttpError(statusCode, params.source)
+      throw new Error(`GDStudio API returned HTTP ${statusCode}`)
+    }
+    const data = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body
+    if (params.types === 'search') logSearchResponse(params.source, data)
+    return data
+  })
 }
 
 // org 音源:调签名服务器的 /sign 拿成品请求,按成品请求原样直发 GDStudio。
 // 签名时效为秒级(实测 5~15s),因此每次调用都重新取签名,拿到后立即发送。
+// 签名服务器非 200 → 熔断 5 分钟:宿主会定时后台遍历 org 渠道,不熔断会把 404 刷满日志
+const SIGN_BREAK_TTL = 5 * 60_000
+let signServerBrokenUntil = 0
+let signServerBrokenReason = ''
+
 async function apiCallOrg(params: Record<string, string | number | null | undefined>) {
   const source = String(params.source || '')
   if (!signServerUrl) {
     notifySignServerMissing(source)
     throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+  }
+  if (Date.now() < signServerBrokenUntil) {
+    // 熔断期内静默快速失败(进入熔断时已记录一条 ! 日志)
+    throw new Error(`签名服务器熔断中(${signServerBrokenReason}),约 ${Math.ceil((signServerBrokenUntil - Date.now()) / 1000)}s 后自动重试`)
   }
 
   // 组装 /sign 参数:op + 业务参数(与签名服务器的 op/参数一一对应;
@@ -571,9 +657,15 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
     throw err
   }
   if (signResp.statusCode !== 200) {
+    // eslint-disable-next-line require-atomic-updates -- 只会延长熔断窗口,晚几毫秒写入无影响
+    signServerBrokenUntil = Date.now() + SIGN_BREAK_TTL
+    signServerBrokenReason = `HTTP ${signResp.statusCode}`
+    const hint = signResp.statusCode === 404
+      ? ' —— 该地址没有 /sign 端点(官网是播放器站点,不是 gdstudio-server),org 音源熔断 5 分钟'
+      : ''
     console.error(`[gdstudio] sign server non-200 (${signResp.statusCode}):`, bodyPreview(signResp.body, 300))
     notifyHttpError(signResp.statusCode ?? '?', source)
-    throw new Error(`签名服务器返回 ${signResp.statusCode}`)
+    throw new Error(`签名服务器返回 ${signResp.statusCode}${hint}`)
   }
   let signData: {
     ok?: boolean
@@ -664,6 +756,8 @@ async function fetchSearchBatch(source: string, name: string, page: number, coun
       lastError = err instanceof Error ? err.message : String(err)
       console.error(`[gdstudio] search request failed [${source}]:`, err)
       notifyNetworkError(source)
+      // 403 交给队列冷却,不做紧贴重试
+      if (lastError.includes('HTTP 403')) break
       if (retry < 1) {
         await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
       }
@@ -688,7 +782,8 @@ async function musicSearch(params: {
   const page = params.page || 1
   const limit = Math.min(params.limit || 20, 50)
   const batchPageCount = 3
-  const fetchCount = limit * batchPageCount
+  // 服务端 count 上限 50:实测 60 会直接返回空数组
+  const fetchCount = Math.min(limit * batchPageCount, 50)
 
   // org 音源未配置签名服务器:立即报错,不进重试/缓存流程
   if (isOrgSource(source) && !signServerUrl) {
@@ -776,6 +871,8 @@ async function musicUrl(params: {
       }
     } catch (err) {
       lastError = err as Error
+      // 403 是 CF 挑战(队列已进入 8s 冷却),立刻换音质重试毫无意义,中止整条降级链
+      if (String(lastError.message).includes('HTTP 403')) break
     }
   }
 
@@ -807,25 +904,40 @@ async function musicLyric(params: {
   const source = params.source
   const musicInfo = params.musicInfo
   const musicId = getRawMusicId(musicInfo)
+  const lyricCacheKey = buildResourceCacheKey(source, musicId)
 
   try {
+    const cachedLyric = lyricResultCache.get(lyricCacheKey)
+    if (cachedLyric) return buildLyricInfo(musicInfo, cachedLyric.lyric, cachedLyric.tlyric)
+    if (Date.now() < (lyricFailUntil.get(lyricCacheKey) || 0)) {
+      throw new Error(`[${source}] lyric recently failed for ${musicId}, skip retry (negative cache)`)
+    }
+
     const { lyricId } = await ensureResourceIds(source, musicInfo, 'lyric')
-    if (!lyricId) throw new Error(`[${source}] No lyric_id available for ${musicId}`)
+    if (!lyricId) {
+      lyricFailUntil.set(lyricCacheKey, Date.now() + LYRIC_FAIL_TTL)
+      throw new Error(`[${source}] No lyric_id available for ${musicId}`)
+    }
     const data = await apiCall({
       types: 'lyric',
       source,
       id: String(lyricId),
     })
     const lyric = typeof data?.lyric === 'string' ? data.lyric.trim() : ''
-    if (!lyric) throw new Error(`[${source}] No lyric available for ${String(lyricId)}`)
+    if (!lyric) {
+      // 空歌词是该音源的常态(bilibili),负缓存防宿主无限重试刷屏
+      lyricFailUntil.set(lyricCacheKey, Date.now() + LYRIC_FAIL_TTL)
+      throw new Error(`[${source}] No lyric available for ${String(lyricId)}`)
+    }
 
-    return buildLyricInfo(
-      musicInfo,
-      lyric,
-      typeof data?.tlyric === 'string' && data.tlyric.trim() ? data.tlyric : null
-    )
+    const tlyric = typeof data?.tlyric === 'string' && data.tlyric.trim() ? data.tlyric : null
+    lyricResultCache.set(lyricCacheKey, { lyric, tlyric })
+    return buildLyricInfo(musicInfo, lyric, tlyric)
   } catch (err) {
-    console.error(`[gdstudio] Failed to get lyric [${source}] musicId=${musicId}:`, err)
+    // 负缓存命中是预期路径(宿主重试),不刷 error 日志
+    if (!String(err).includes('negative cache')) {
+      console.error(`[gdstudio] Failed to get lyric [${source}] musicId=${musicId}:`, err)
+    }
     throw err
   }
 }
