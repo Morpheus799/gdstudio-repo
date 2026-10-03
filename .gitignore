@@ -4,3 +4,4 @@ outputs
 node_modules
 .env
 .vscode
+tests

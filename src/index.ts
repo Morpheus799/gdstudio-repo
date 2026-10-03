@@ -2,6 +2,7 @@ import { registerResourceAction, request as apiRequest, console, player, musicLi
 import { createSearchPagination } from './shared/searchPagination'
 import { buildMusicId, getGdSource, getRawMusicId, toGdSource } from './identity'
 import { promptLegacyMigration, setupMigrationCommands, shouldRejectLegacySource } from './migration'
+import { setupSignServerSettingsCommand } from './signServerSettings'
 import { showUpdateNotice } from './updateNotice'
 
 const MAIN_API_URL = 'https://music-api.gdstudio.xyz/api.php'
@@ -84,13 +85,13 @@ function notifyNetworkError(source?: string | number | null) {
   showErrorToast(`GD音乐台接口连接失败${src}，请检查网络后重试`)
 }
 
-// org 音源未配置签名服务器:点击音源搜索/播放即报错引导去设置
+// org 音源未配置签名服务器时提示当前音源不可用。
 function notifySignServerMissing(source?: string | number | null) {
   const now = Date.now()
   if (now - lastErrorNotifyAt < ERROR_NOTIFY_INTERVAL) return
   lastErrorNotifyAt = now
   const src = source ? ` [${source}]` : ''
-  showErrorToast(`GD音乐台${src} 音源需要签名服务器，请先在插件设置中配置「签名服务器地址」`)
+  showErrorToast(`GD音乐台${src} 音源当前不可用`)
 }
 
 // ========== 工具函数 ==========
@@ -543,7 +544,7 @@ async function apiCallOrg(params: Record<string, string | number | null | undefi
   const source = String(params.source || '')
   if (!signServerUrl) {
     notifySignServerMissing(source)
-    throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+    throw new Error('当前音源尚未配置')
   }
 
   // 组装 /sign 参数:op + 业务参数(与签名服务器的 op/参数一一对应;
@@ -693,7 +694,7 @@ async function musicSearch(params: {
   // org 音源未配置签名服务器:立即报错,不进重试/缓存流程
   if (isOrgSource(source) && !signServerUrl) {
     notifySignServerMissing(source)
-    throw new Error('未配置签名服务器地址(插件设置页 signServerUrl)')
+    throw new Error('当前音源尚未配置')
   }
 
   const searchKey = JSON.stringify([source, name, artist || '', limit])
@@ -842,6 +843,10 @@ registerResourceAction({
 
 void setupMigrationCommands().catch((err) => {
   console.error('[gdstudio] Failed to register migration commands:', err)
+})
+
+void setupSignServerSettingsCommand().catch((err) => {
+  console.error('[gdstudio] Failed to register sign server settings command:', err)
 })
 
 void showUpdateNotice().catch((err) => {

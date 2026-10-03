@@ -58,36 +58,18 @@ const config: ExtensionConfig = {
         name: '查看迁移报告',
         description: '查看最近一次歌单迁移的结果。',
       },
+      {
+        command: 'configureSignServer',
+        name: 'GD音乐台维护',
+      },
     ],
     settings: [
       {
         field: 'preloadQualityOnSearch',
         name: '搜索时预加载音质',
-        description: '仅影响网易云音乐、酷我音乐、JOOX、哔哩哔哩四个主 API 音源(org 音源为防限流始终不在搜索时预加载)。',
+        description: '仅影响网易云音乐、酷我音乐、JOOX、哔哩哔哩四个主 API 音源。',
         type: 'boolean',
         default: true,
-      },
-      {
-        field: 'signServerUrl',
-        name: '签名服务器地址',
-        description:
-          'gdstudio-server 的地址,不要带 /sign 路径,例如 https://your-domain.example。QQ音乐、TIDAL、QOBUZ、Apple Music、YouTube Music、Spotify 音源必须配置此项后才可用。',
-        type: 'input',
-        default: '',
-      },
-      {
-        field: 'signKey',
-        name: '签名 token',
-        description: '签名服务器 /sign 端点的 SIGN_KEY(Bearer token)',
-        type: 'input',
-        default: '',
-      },
-      {
-        field: 'useOrgSource',
-        name: '全部使用 org 音源',
-        description: '当主音源不稳定时使用org音源',
-        type: 'boolean',
-        default: false,
       },
     ],
   },

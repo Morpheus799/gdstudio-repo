@@ -6,10 +6,7 @@
 
 QQ 音乐、TIDAL、Qobuz、Apple Music、YouTube Music 和 Spotify 音源需要配置兼容的签名服务器。
 
-在扩展设置中填写：
-
-- **签名服务器地址**：服务器基础地址，例如 `https://sign.example.com`，不要包含 `/sign`。
-- **签名 token**：签名服务器使用的 Bearer token。
+签名服务器地址和 token 保存在本机扩展配置中，可通过扩展的维护命令修改。默认不包含服务器地址或 token。
 
 扩展会请求：
 
