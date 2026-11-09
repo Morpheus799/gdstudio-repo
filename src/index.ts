@@ -1,5 +1,6 @@
 import { registerResourceAction, request as apiRequest, console, player, musicList, configuration, app, dataConverter } from './shared/hostApi'
 import { createSearchPagination } from './shared/searchPagination'
+import { cacheResourceIds, getCachedResourceIds, type ResourceIds } from './shared/resourceIdCache'
 import { buildMusicId, getGdSource, getRawMusicId, toGdSource } from './identity'
 import { promptLegacyMigration, setupMigrationCommands, shouldRejectLegacySource } from './migration'
 import { setupSignServerSettingsCommand } from './signServerSettings'
@@ -219,10 +220,6 @@ function getOptionalResourceId(value: unknown) {
 }
 
 type ResourceIdType = 'pic' | 'lyric'
-interface ResourceIds {
-  picId: string | null
-  lyricId: string | null
-}
 
 const resourceIdGettingPromises = new Map<string, Promise<ResourceIds>>()
 
@@ -308,6 +305,9 @@ async function ensureResourceIds(source: string, musicInfo: Record<string, unkno
   let getting = resourceIdGettingPromises.get(cacheKey)
   if (!getting) {
     getting = (async () => {
+      const cachedIds = await getCachedResourceIds(gdSource, musicId)
+      if (cachedIds) return cachedIds
+
       const queryName = typeof musicInfo.name === 'string' ? musicInfo.name.trim() : ''
       if (!queryName) throw new Error(`[${source}] Cannot migrate resource IDs without a music name`)
       const searchData = await apiCall({
@@ -325,6 +325,7 @@ async function ensureResourceIds(source: string, musicInfo: Record<string, unkno
         picId: getOptionalResourceId(exactMusic.pic_id),
         lyricId: getOptionalResourceId(exactMusic.lyric_id),
       }
+      await cacheResourceIds(gdSource, musicId, resolvedIds)
       await persistMigratedResourceIds(source, musicId, resolvedIds).catch((err) => {
         console.error(`[gdstudio] Failed to persist resource IDs for ${source}:${musicId}:`, err)
       })

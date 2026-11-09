@@ -4,4 +4,5 @@ outputs
 node_modules
 .env
 .vscode
-tests
+tests/*
+!tests/resourceIdCache.test.mjs
